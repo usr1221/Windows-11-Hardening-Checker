@@ -4,17 +4,27 @@
     Windows 11 workstations" guidance and produces an Excel (.xlsx) report.
 
 .DESCRIPTION
-    Reads the local registry (read-only - it never changes anything) for each
-    policy defined in Policies.json, compares the current value to the
-    ASD-recommended value, and writes a colour-coded Excel workbook with the
-    columns: Policy Name, Scope, Policy Path, Registry Path, Setting name,
-    Current Value, Recommended Value, Status and Priority (plus Category and
-    Notes for context).
+    Audits every check defined in Policies.json and writes a colour-coded
+    Excel workbook with the columns: Policy Name, Scope, Policy Path,
+    Registry Path (or data source), Setting name, Current Value, Recommended
+    Value, Status and Priority (plus Category and Notes for context).
+
+    The tool is READ-ONLY - it never changes any setting. Data sources:
+        Registry        - HKLM / HKCU policy values (default check type)
+        SecEditAccess   - password/lockout/account policy  (secedit /export)
+        SecEditPrivilege- user rights assignments           (secedit /export)
+        AuditPol        - advanced audit subcategories      (auditpol /backup)
+        LocalUser       - built-in account status/renaming  (Get-LocalUser)
+        OptionalFeature - SMBv1, PowerShell 2.0, etc.       (DISM API)
+        AppLocker       - effective application control     (Get-AppLockerPolicy)
+    secedit /export and auditpol /backup only WRITE a temp file - they never
+    modify configuration.
 
     Status values:
-        Configured     - the setting exists and matches the recommendation
+        Configured     - the setting matches the recommendation
         Mismatch       - the setting exists but does not match
         Not Configured - the setting is absent (left at the Windows default)
+        Unknown        - the data source needs elevation (run as Administrator)
 
     The .xlsx is generated directly via the Open XML (SpreadsheetML) format, so
     NO third-party module (ImportExcel) and NO installed copy of Excel are
@@ -155,6 +165,15 @@ function Get-ComplianceStatus {
             if ($curIsNum -and $recIsNum) { if ($cn -le $rn) { return 'Configured' } else { return 'Mismatch' } }
             return 'Mismatch'
         }
+        'between' {
+            # Recommended = "min,max" (inclusive). E.g. lockout threshold "1,5".
+            $parts = $Recommended -split ','
+            if ($curIsNum -and $parts.Count -eq 2) {
+                $min = [double]$parts[0].Trim(); $max = [double]$parts[1].Trim()
+                if ($cn -ge $min -and $cn -le $max) { return 'Configured' }
+            }
+            return 'Mismatch'
+        }
         'oneof' {
             $options = $Recommended -split ',' | ForEach-Object { $_.Trim() }
             foreach ($opt in $options) {
@@ -179,13 +198,206 @@ function Get-ComplianceStatus {
     }
 }
 
+function Convert-ToSid {
+    # Translate an account name to its SID string; SIDs pass through unchanged.
+    param([string]$Token)
+    if ($Token -match '^S-1-') { return $Token }
+    try {
+        return ([System.Security.Principal.NTAccount]$Token).Translate(
+            [System.Security.Principal.SecurityIdentifier]).Value
+    } catch { return $Token }
+}
+
+function Convert-ToFriendly {
+    # Translate a SID string to a friendly account name for display.
+    param([string]$Token)
+    if ($Token -notmatch '^S-1-') { return $Token }
+    try {
+        return ([System.Security.Principal.SecurityIdentifier]$Token).Translate(
+            [System.Security.Principal.NTAccount]).Value
+    } catch { return $Token }
+}
+
+# --------------------------------------------------------------------------
+#  Collect non-registry data sources (secedit / auditpol / local users /
+#  optional features / AppLocker). All read-only: secedit /export and
+#  auditpol /backup only WRITE a temp file, they never change configuration.
+#  These sources need elevation; without it the affected checks report
+#  'Unknown' rather than a misleading result.
+# --------------------------------------------------------------------------
+$needsSecedit   = @($policies | Where-Object { $_.CheckType -in @('SecEditAccess','SecEditPrivilege') }).Count -gt 0
+$needsAudit     = @($policies | Where-Object { $_.CheckType -eq 'AuditPol' }).Count -gt 0
+$needsAppLocker = @($policies | Where-Object { $_.CheckType -eq 'AppLocker' }).Count -gt 0
+
+$secAccess = $null; $secPriv = $null
+if ($needsSecedit -and $isAdmin) {
+    $tmpInf = Join-Path $env:TEMP ("sece_{0}.inf" -f ([guid]::NewGuid().ToString('N')))
+    & secedit.exe /export /cfg "$tmpInf" /quiet | Out-Null
+    if (Test-Path $tmpInf) {
+        $secAccess = @{}; $secPriv = @{}
+        $section = ''
+        foreach ($line in (Get-Content $tmpInf)) {
+            if ($line -match '^\s*\[(.+)\]\s*$') { $section = $Matches[1]; continue }
+            if ($line -match '^\s*([^=]+?)\s*=\s*(.*)$') {
+                $k = $Matches[1].Trim(); $v = $Matches[2].Trim()
+                if     ($section -eq 'System Access')    { $secAccess[$k] = ($v -replace '"', '') }
+                elseif ($section -eq 'Privilege Rights') { $secPriv[$k]   = $v }
+            }
+        }
+        Remove-Item $tmpInf -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$auditMap = $null
+if ($needsAudit -and $isAdmin) {
+    # auditpol /backup emits a CSV whose last column is the NUMERIC setting
+    # value (0=none 1=success 2=failure 3=both) keyed by subcategory GUID -
+    # language-independent, unlike the localized text of auditpol /get.
+    $tmpCsv = Join-Path $env:TEMP ("audit_{0}.csv" -f ([guid]::NewGuid().ToString('N')))
+    & auditpol.exe /backup /file:"$tmpCsv" | Out-Null
+    if (Test-Path $tmpCsv) {
+        $auditMap = @{}
+        foreach ($line in (Get-Content $tmpCsv)) {
+            if ($line -match '\{([0-9a-fA-F-]{36})\}') {
+                $g = $Matches[1].ToLower()
+                $fields = $line -split ','
+                $v = 0
+                if ([int]::TryParse($fields[$fields.Count - 1].Trim(), [ref]$v)) { $auditMap[$g] = $v }
+            }
+        }
+        Remove-Item $tmpCsv -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$localUsers = $null
+try { $localUsers = @(Get-LocalUser -ErrorAction Stop) } catch { $localUsers = $null }
+
+$appLockerRuleCount = $null
+if ($needsAppLocker -and (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyContinue)) {
+    try {
+        $alp = Get-AppLockerPolicy -Effective -ErrorAction Stop
+        $appLockerRuleCount = 0
+        foreach ($rc in $alp.RuleCollections) { $appLockerRuleCount += @($rc).Count }
+    } catch { $appLockerRuleCount = $null }
+}
+
 # --------------------------------------------------------------------------
 #  Run the audit
 # --------------------------------------------------------------------------
 $results = foreach ($p in $policies) {
-    $reg = Get-RegistryValue -Path $p.RegistryPath -Name $p.SettingName
-    $status = Get-ComplianceStatus -Current $reg.Value -Exists $reg.Exists `
-                  -Recommended ([string]$p.RecommendedValue) -Operator $p.Operator
+    $checkType = $p.CheckType
+    if (-not $checkType) { $checkType = 'Registry' }
+    $current = ''
+    $status  = ''
+
+    if ($checkType -eq 'Registry') {
+        $reg = Get-RegistryValue -Path $p.RegistryPath -Name $p.SettingName
+        $current = ConvertTo-DisplayString $reg.Value
+        $status  = Get-ComplianceStatus -Current $reg.Value -Exists $reg.Exists `
+                       -Recommended ([string]$p.RecommendedValue) -Operator $p.Operator
+    }
+    elseif ($checkType -eq 'SecEditAccess') {
+        # Password / lockout / account policy from [System Access] of the export
+        if ($null -eq $secAccess) { $current = '<requires elevation>'; $status = 'Unknown' }
+        elseif (-not $secAccess.ContainsKey($p.SettingName)) { $current = '<not set>'; $status = 'Not Configured' }
+        else {
+            $current = $secAccess[$p.SettingName]
+            $status  = Get-ComplianceStatus -Current $current -Exists $true `
+                           -Recommended ([string]$p.RecommendedValue) -Operator $p.Operator
+        }
+    }
+    elseif ($checkType -eq 'SecEditPrivilege') {
+        # User rights assignment from [Privilege Rights]. Compared by SID so
+        # results are correct on non-English Windows. An absent line means the
+        # right is held by no one (empty set).
+        if ($null -eq $secPriv) { $current = '<requires elevation>'; $status = 'Unknown' }
+        else {
+            $raw = ''
+            if ($secPriv.ContainsKey($p.SettingName)) { $raw = $secPriv[$p.SettingName] }
+            $curSids = @(); $curNames = @()
+            foreach ($tok in ($raw -split ',')) {
+                $t = $tok.Trim().TrimStart('*')
+                if (-not $t) { continue }
+                $curSids  += (Convert-ToSid $t).ToLower()
+                $curNames += (Convert-ToFriendly $t)
+            }
+            $recSids = @()
+            foreach ($tok in (([string]$p.RecommendedSids) -split ',')) {
+                $t = $tok.Trim()
+                if ($t) { $recSids += $t.ToLower() }
+            }
+            $op = $p.Operator
+            if (-not $op) { $op = 'subsetof' }
+            $ok = $true
+            if ($op -eq 'subsetof') {
+                # holders must be within the allowlist (fewer is fine)
+                foreach ($s in $curSids) { if ($recSids -notcontains $s) { $ok = $false; break } }
+            }
+            elseif ($op -eq 'contains') {
+                # required principals (e.g. deny rights) must all be present
+                foreach ($s in $recSids) { if ($curSids -notcontains $s) { $ok = $false; break } }
+            }
+            elseif ($op -eq 'setequals') {
+                if (@($curSids).Count -ne @($recSids).Count) { $ok = $false }
+                else { foreach ($s in $curSids) { if ($recSids -notcontains $s) { $ok = $false; break } } }
+            }
+            if (@($curNames).Count) { $current = ($curNames -join ', ') } else { $current = '<no one>' }
+            if ($ok) { $status = 'Configured' } else { $status = 'Mismatch' }
+        }
+    }
+    elseif ($checkType -eq 'AuditPol') {
+        if ($null -eq $auditMap) { $current = '<requires elevation>'; $status = 'Unknown' }
+        else {
+            $g = ([string]$p.SettingName).ToLower()
+            $val = 0
+            if ($auditMap.ContainsKey($g)) { $val = $auditMap[$g] }
+            if     ($val -eq 0) { $current = 'No Auditing' }
+            elseif ($val -eq 1) { $current = 'Success' }
+            elseif ($val -eq 2) { $current = 'Failure' }
+            elseif ($val -eq 3) { $current = 'Success and Failure' }
+            else                { $current = [string]$val }
+            $req = [int]$p.RequiredFlags
+            if (($val -band $req) -eq $req) { $status = 'Configured' }
+            elseif ($val -eq 0)             { $status = 'Not Configured' }
+            else                            { $status = 'Mismatch' }
+        }
+    }
+    elseif ($checkType -eq 'LocalUser') {
+        # SettingName = "<RID>:<Property>", e.g. "500:Enabled" for the
+        # built-in Administrator. Works without elevation.
+        if ($null -eq $localUsers) { $current = '<unable to read local users>'; $status = 'Unknown' }
+        else {
+            $parts = ([string]$p.SettingName) -split ':'
+            $rid = $parts[0]; $prop = $parts[1]
+            $u = $localUsers | Where-Object { $_.SID.Value -like ("*-" + $rid) } | Select-Object -First 1
+            if (-not $u) { $current = '<account not present>'; $status = 'Configured' }
+            else {
+                $current = [string]$u.$prop
+                $status  = Get-ComplianceStatus -Current $current -Exists $true `
+                               -Recommended ([string]$p.RecommendedValue) -Operator $p.Operator
+            }
+        }
+    }
+    elseif ($checkType -eq 'OptionalFeature') {
+        if (-not $isAdmin) { $current = '<requires elevation>'; $status = 'Unknown' }
+        else {
+            try {
+                $f = Get-WindowsOptionalFeature -Online -FeatureName $p.SettingName -ErrorAction Stop
+                if ($f) { $current = [string]$f.State } else { $current = 'NotPresent' }
+            } catch { $current = 'NotPresent' }
+            if ($current -like 'Disabled*' -or $current -eq 'NotPresent') { $status = 'Configured' }
+            else { $status = 'Mismatch' }
+        }
+    }
+    elseif ($checkType -eq 'AppLocker') {
+        if ($null -eq $appLockerRuleCount) {
+            $current = '<unable to read - AppLocker unsupported on this SKU or access denied>'
+            $status = 'Unknown'
+        } else {
+            $current = "{0} rule(s) in effective policy" -f $appLockerRuleCount
+            if ($appLockerRuleCount -ge 1) { $status = 'Configured' } else { $status = 'Not Configured' }
+        }
+    }
 
     [pscustomobject][ordered]@{
         Category          = $p.Category
@@ -194,7 +406,7 @@ $results = foreach ($p in $policies) {
         'Policy Path'     = $p.PolicyPath
         'Registry Path'   = $p.RegistryPath
         'Setting name'    = $p.SettingName
-        'Current Value'   = (ConvertTo-DisplayString $reg.Value)
+        'Current Value'   = $current
         'Recommended Value' = [string]$p.RecommendedValue
         Status            = $status
         Priority          = $p.Priority
@@ -209,9 +421,11 @@ $total       = $results.Count
 $configured  = @($results | Where-Object Status -eq 'Configured').Count
 $mismatch    = @($results | Where-Object Status -eq 'Mismatch').Count
 $notConfig   = @($results | Where-Object Status -eq 'Not Configured').Count
-$score       = if ($total) { [math]::Round(($configured / $total) * 100, 1) } else { 0 }
+$unknown     = @($results | Where-Object Status -eq 'Unknown').Count
+$assessed    = $total - $unknown
+$score       = if ($assessed) { [math]::Round(($configured / $assessed) * 100, 1) } else { 0 }
 
-$nonCompliant = @($results | Where-Object Status -ne 'Configured')
+$nonCompliant = @($results | Where-Object { $_.Status -ne 'Configured' -and $_.Status -ne 'Unknown' })
 $ncHigh   = @($nonCompliant | Where-Object Priority -eq 'High').Count
 $ncMedium = @($nonCompliant | Where-Object Priority -eq 'Medium').Count
 $ncLow    = @($nonCompliant | Where-Object Priority -eq 'Low').Count
@@ -222,7 +436,10 @@ Write-Host ("  Total checks   : {0}" -f $total)
 Write-Host ("  Configured     : {0}" -f $configured) -ForegroundColor Green
 Write-Host ("  Mismatch       : {0}" -f $mismatch)   -ForegroundColor Red
 Write-Host ("  Not Configured : {0}" -f $notConfig)  -ForegroundColor Yellow
-Write-Host ("  Compliance     : {0}%" -f $score)
+if ($unknown -gt 0) {
+    Write-Host ("  Unknown        : {0}  (run as Administrator to assess these)" -f $unknown) -ForegroundColor DarkGray
+}
+Write-Host ("  Compliance     : {0}% (of {1} assessed)" -f $score, $assessed)
 Write-Host ("  Non-compliant by priority -> High:{0}  Medium:{1}  Low:{2}" -f $ncHigh, $ncMedium, $ncLow)
 
 # --------------------------------------------------------------------------
@@ -384,20 +601,21 @@ $stylesXml = @'
 <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
 <font><b/><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/></font>
 </fonts>
-<fills count="6">
+<fills count="7">
 <fill><patternFill patternType="none"/></fill>
 <fill><patternFill patternType="gray125"/></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FF4472C4"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFFEB9C"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFE0E0E0"/></patternFill></fill>
 </fills>
 <borders count="2">
 <border><left/><right/><top/><bottom/><diagonal/></border>
 <border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom><diagonal/></border>
 </borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="8">
+<cellXfs count="9">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
@@ -406,6 +624,7 @@ $stylesXml = @'
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>
@@ -417,6 +636,7 @@ function Get-StatusStyle {
         'Configured'     { 2 }
         'Mismatch'       { 3 }
         'Not Configured' { 4 }
+        'Unknown'        { 8 }
         default          { 5 }
     }
 }
@@ -473,7 +693,8 @@ $sumRows = New-Object System.Collections.ArrayList
 [void]$sumRows.Add(@( @{ V='Configured';      S=6 }, @{ V=$configured; S=2 } ))
 [void]$sumRows.Add(@( @{ V='Mismatch';        S=6 }, @{ V=$mismatch;   S=3 } ))
 [void]$sumRows.Add(@( @{ V='Not Configured';  S=6 }, @{ V=$notConfig;  S=4 } ))
-[void]$sumRows.Add(@( @{ V='Compliance score';S=6 }, @{ V=("{0}%" -f $score); S=5 } ))
+[void]$sumRows.Add(@( @{ V='Unknown (needs admin)'; S=6 }, @{ V=$unknown; S=8 } ))
+[void]$sumRows.Add(@( @{ V='Compliance score';S=6 }, @{ V=("{0}% (of {1} assessed)" -f $score, $assessed); S=5 } ))
 [void]$sumRows.Add(@( @{ V=''; S=0 } ))
 [void]$sumRows.Add(@( @{ V='Non-compliant by priority'; S=7 }, @{ V='Count'; S=7 } ))
 [void]$sumRows.Add(@( @{ V='High';   S=6 }, @{ V=$ncHigh;   S=5 } ))

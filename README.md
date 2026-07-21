@@ -5,7 +5,21 @@ Australian Signals Directorate (ASD / ACSC) guide
 [*Hardening Microsoft Windows 11 workstations*](https://www.cyber.gov.au/business-government/protecting-devices-systems/hardening-systems-applications/system-hardening/hardening-microsoft-windows-11-workstations)
 and produces a colour-coded **Excel (.xlsx)** report.
 
-The tool **only reads** the registry — it never changes any setting.
+The tool is **read-only** — it never changes any setting. It audits **seven data
+sources**, not just the registry:
+
+| CheckType | Source | Covers |
+|-----------|--------|--------|
+| `Registry` (default) | HKLM / HKCU | Group Policy–backed settings |
+| `SecEditAccess` | `secedit /export` | Password & account lockout policy, security options in the SAM/LSA database |
+| `SecEditPrivilege` | `secedit /export` | User rights assignments (compared **by SID**, so results are correct on non-English Windows) |
+| `AuditPol` | `auditpol /backup` | Advanced audit policy subcategories (compared by **GUID + numeric value**, language-independent) |
+| `LocalUser` | `Get-LocalUser` | Built-in Administrator/Guest status & renaming |
+| `OptionalFeature` | DISM API | SMBv1, PowerShell 2.0 engine |
+| `AppLocker` | `Get-AppLockerPolicy -Effective` | Application control policy presence |
+
+(`secedit /export` and `auditpol /backup` only *write a temp file* — they never
+modify configuration.)
 
 ## Files
 
@@ -22,8 +36,9 @@ The tool **only reads** the registry — it never changes any setting.
 - **No** extra modules and **no** installed copy of Excel are required — the
   `.xlsx` is generated directly via the Open XML format.
 - Run from an **elevated (Administrator)** PowerShell for complete results.
-  Standard users cannot read some `HKLM` policy keys, which would then show as
-  *Not Configured*.
+  `secedit`, `auditpol` and the DISM feature checks **require elevation**; when
+  run as a standard user those checks report **Unknown** (grey) instead of a
+  misleading result, and some `HKLM` policy keys may read as *Not Configured*.
 
 ## Usage
 
@@ -69,9 +84,12 @@ auto-filters, containing the requested columns:
 
 ### Status logic
 
-- **Configured** – the value exists and matches the recommendation.
-- **Mismatch** – the value exists but does not match.
-- **Not Configured** – the value is absent (left at the Windows default).
+- **Configured** (green) – the value matches the recommendation.
+- **Mismatch** (red) – the value exists but does not match.
+- **Not Configured** (yellow) – the value is absent (left at the Windows default).
+- **Unknown** (grey) – the data source needs elevation (or the feature, e.g.
+  AppLocker, is unsupported on this SKU). Re-run as Administrator. Unknown
+  checks are excluded from the compliance score.
 
 > A *Not Configured* result means the hardening setting has not been explicitly
 > applied. In a few cases the Windows default is already secure, so treat
@@ -111,62 +129,82 @@ All checks live in `Policies.json`. Each entry looks like:
 | `ne` | not equal |
 | `ge` | current ≥ recommended (numeric) |
 | `le` | current ≤ recommended (numeric) |
+| `between` | recommended is `"min,max"`; current must fall inside (e.g. lockout threshold `"1,5"`) |
 | `oneof` | matches any value in a comma-separated list (e.g. `"1,2"`) |
 | `contains` | current value contains every comma-separated token (used for multi-field values such as Hardened UNC Paths) |
+
+`SecEditPrivilege` checks use set operators against `RecommendedSids`:
+
+| Operator | Meaning |
+|----------|---------|
+| `subsetof` | every account holding the right must be in the allowlist (fewer is fine) |
+| `contains` | the listed accounts (e.g. Guests in a deny right) must all be present |
+| `setequals` | exact set match — with empty `RecommendedSids` this means "No one" |
+
+`AuditPol` checks use `RequiredFlags` (1 = Success, 2 = Failure, 3 = both); the
+current setting must include at least the required flags.
 
 Add a new object to the array, save, and re-run — no code changes needed.
 
 ## Coverage and limitations
 
-This release ships **199 registry-based checks** spanning the major categories
-of the guide: Attack Surface Reduction, Microsoft Defender Antivirus (incl.
-Block at First Sight, Network Protection, exclusion hardening), Controlled
-Folder Access, credential caching / LSA protection / Credential Guard / CredSSP
-/ credential delegation, User Account Control, local administrator accounts,
-Microsoft accounts, anonymous & network access, NTLM / LAN Manager & NTLM
-session security, SMB signing & SMBv1, secure channel, LLMNR, insecure guest
-logons, RPC hardening, MSS network-stack settings, Hardened UNC Paths, Remote
-Desktop & Remote Assistance, PowerShell logging & signing, Command Prompt &
-registry tools, Autoplay/AutoRun, BitLocker & DMA protection, Secure Launch,
-Early Launch Antimalware, SEHOP / DEP, SmartScreen / Enhanced Phishing
-Protection, Mark-of-the-Web / Attachment Manager, session & lock screen,
-audit & event log sizing, command-line process auditing, WinRM/WinRS, Windows
-Search & Cortana, Windows Defender Firewall (incl. logging), Windows Installer,
-print hardening (PrintNightmare / Point and Print), MSDT (Follina mitigation),
-legacy run lists, network bridging, power management, diagnostic data,
-Microsoft Edge and Office macro hardening.
+This release ships **272 checks**:
+
+- **200 registry-based checks** spanning: Attack Surface Reduction, Microsoft
+  Defender Antivirus (incl. Block at First Sight, Network Protection, exclusion
+  hardening), Controlled Folder Access, credential caching / LSA protection /
+  Credential Guard / CredSSP / credential delegation, User Account Control,
+  local administrator accounts & LAPS, Microsoft accounts, anonymous & network
+  access, NTLM / LAN Manager & NTLM session security, SMB signing & SMBv1,
+  secure channel, LLMNR, insecure guest logons, RPC hardening, MSS
+  network-stack settings, Hardened UNC Paths, Remote Desktop & Remote
+  Assistance, PowerShell logging & signing, Command Prompt & registry tools,
+  Autoplay/AutoRun, BitLocker & DMA protection, Secure Launch, Early Launch
+  Antimalware, SEHOP / DEP, SmartScreen / Enhanced Phishing Protection,
+  Mark-of-the-Web / Attachment Manager, session & lock screen, event log
+  sizing, command-line process auditing, WinRM/WinRS, Windows Search & Cortana,
+  Windows Defender Firewall (incl. logging), Windows Installer, print hardening
+  (PrintNightmare / Point and Print), MSDT (Follina mitigation), legacy run
+  lists, network bridging, power management, diagnostic data, Microsoft Edge
+  and Office macro hardening.
+- **11 account-policy checks** (password history/age/length/complexity,
+  reversible encryption, lockout threshold/duration/reset, anonymous SID
+  translation, force logoff) via `secedit`.
+- **23 user-rights-assignment checks** via `secedit`, compared by SID.
+- **30 advanced-audit-policy subcategory checks** via `auditpol`, compared by
+  GUID and numeric value.
+- **4 built-in account checks** (Administrator/Guest disabled & renamed) via
+  `Get-LocalUser`.
+- **3 Windows feature checks** (SMBv1, PowerShell 2.0) via DISM.
+- **1 application-control presence check** (AppLocker effective policy).
 
 ### How coverage was verified
 
 The policy set was cross-checked against the **authoritative list of ~600
 settings** in Microsoft's official *Intune ACSC Windows Hardening Guidelines*
-implementation of this guide. After excluding the items below, the remaining
-in-scope, registry-backed settings are covered:
+implementation of this guide. Remaining intentional exclusions:
 
-- **~200 Internet Explorer 11 security-zone settings** — intentionally omitted.
-  IE11 is removed from Windows 11, so these keys do not apply. (Edge hardening
-  is covered instead.)
-- **~30 advanced audit subcategories** and **~24 user-rights assignments** —
-  not registry-based (see limitations below).
+- **~200 Internet Explorer 11 security-zone settings** — IE11 is removed from
+  Windows 11, so these keys do not apply. (Edge hardening is covered instead.)
 - A small number of list-valued / device-inventory settings (device-install
-  allow/deny lists, removable-storage class GUID rules, LAPS) that require
+  allow/deny lists, removable-storage class GUID rules) that require
   environment-specific values rather than a single recommended value.
 
 **Known limitations:**
 
-- **Registry-readable settings only.** Controls enforced through mechanisms
-  other than the registry are out of scope for this tool, including: account
-  password & lockout policies (`secedit` / `net accounts`), advanced audit
-  policy subcategories (`auditpol`), user-rights assignments, AppLocker / WDAC
-  application control rules, built-in guest/administrator account status, and
-  Windows optional features. Audit these separately.
+- **AppLocker check is presence-only.** It confirms an effective policy with
+  rules exists — it cannot judge rule quality/coverage, and it does not detect
+  WDAC (a valid alternative). Application control needs manual review.
 - **User scope = current user.** `HKCU` checks reflect the account that runs the
   script, not every profile on the machine.
+- **Localized built-in account names.** On non-English Windows the default
+  Guest/Administrator names may be translated (e.g. `Gość`), so the "renamed"
+  checks can pass as a locale artifact — verify manually.
 - **Recommended values should be validated against the live guide.** Microsoft
   and the ASD update guidance over time. Treat `Policies.json` as a baseline to
   review against the current published version, and adjust the few values that
-  are environment-dependent (e.g. event-log sizes, telemetry level, whether RDP
-  is required at all).
+  are environment-dependent (e.g. event-log sizes, telemetry level, audit
+  Success/Failure levels, lockout duration, whether RDP is required at all).
 
 ## Source
 
