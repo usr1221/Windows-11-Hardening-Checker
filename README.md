@@ -148,29 +148,54 @@ Add a new object to the array, save, and re-run — no code changes needed.
 
 ## Coverage and limitations
 
-This release ships **272 checks**:
+This release ships **407 checks**:
 
-- **200 registry-based checks** spanning: Attack Surface Reduction, Microsoft
-  Defender Antivirus (incl. Block at First Sight, Network Protection, exclusion
-  hardening), Controlled Folder Access, credential caching / LSA protection /
-  Credential Guard / CredSSP / credential delegation, User Account Control,
-  local administrator accounts & LAPS, Microsoft accounts, anonymous & network
-  access, NTLM / LAN Manager & NTLM session security, SMB signing & SMBv1,
-  secure channel, LLMNR, insecure guest logons, RPC hardening, MSS
-  network-stack settings, Hardened UNC Paths, Remote Desktop & Remote
-  Assistance, PowerShell logging & signing, Command Prompt & registry tools,
-  Autoplay/AutoRun, BitLocker & DMA protection, Secure Launch, Early Launch
-  Antimalware, SEHOP / DEP, SmartScreen / Enhanced Phishing Protection,
-  Mark-of-the-Web / Attachment Manager, session & lock screen, event log
-  sizing, command-line process auditing, WinRM/WinRS, Windows Search & Cortana,
-  Windows Defender Firewall (incl. logging), Windows Installer, print hardening
-  (PrintNightmare / Point and Print), MSDT (Follina mitigation), legacy run
-  lists, network bridging, power management, diagnostic data, Microsoft Edge
-  and Office macro hardening.
-- **11 account-policy checks** (password history/age/length/complexity,
-  reversible encryption, lockout threshold/duration/reset, anonymous SID
-  translation, force logoff) via `secedit`.
-- **23 user-rights-assignment checks** via `secedit`, compared by SID.
+- **329 registry-based checks** spanning: Attack Surface Reduction (incl.
+  vulnerable-signed-driver block), Microsoft Defender Antivirus (incl. Block at
+  First Sight, Network Protection, exclusion hardening, PUA, heuristics,
+  quarantine, file-hash computation, MAPS override lockdown), Controlled Folder
+  Access (incl. protected folders / allowed apps), credential caching / LSA
+  protection / Credential Guard / CredSSP / credential delegation / Custom SSP
+  block / trusted-path credential prompts, User Account Control, local
+  administrator accounts & LAPS (backup directory, encryption, complexity,
+  length, age), Windows Hello for Business (PIN complexity/length/expiration,
+  TPM, biometrics), Microsoft accounts, anonymous & network access, NTLM / LAN
+  Manager & NTLM session security (incl. LDAP client signing, Kerberos
+  encryption types, NULL session fallback), SMB signing & SMBv1, secure
+  channel (incl. machine account password age), LLMNR, insecure guest logons,
+  RPC hardening (incl. packet-level privacy), MSS network-stack settings,
+  Hardened UNC Paths, Remote Desktop & Remote Assistance (incl. clipboard /
+  server authentication), PowerShell logging & signing, Command Prompt &
+  registry tools, Autoplay/AutoRun, BitLocker & DMA protection (fixed / OS /
+  removable drives, passwords, encryption type, recovery, enhanced PIN, Secure
+  Boot integrity), Secure Launch, Early Launch Antimalware, SEHOP / DEP,
+  SmartScreen / Enhanced Phishing Protection, Mark-of-the-Web / Attachment
+  Manager, session & lock screen (incl. logon screen network-selection UI,
+  CTRL+ALT+DEL enforcement, safe-mode admin-only, convenience PIN sign-in),
+  event log sizing, command-line process auditing, WinRM/WinRS, Windows Search
+  & Cortana, Windows Defender Firewall (incl. logging), Windows Installer,
+  print hardening (PrintNightmare / Point and Print / Redirection Guard / RPC
+  connection / listener / TCP port / driver signature validation / queue file
+  processing), MSDT (Follina mitigation), legacy run lists, network bridging,
+  power management (standby S1-S3, hibernate / sleep / unattended / hybrid
+  sleep timeouts, power-menu visibility), diagnostic data, Microsoft Edge and
+  Office macro hardening, Windows Update (Automatic Updates, WSUS server,
+  pause-updates lockdown), removable storage classes (CD/DVD, removable disks,
+  tape drives, WPD - read/write/execute deny), device installation
+  restrictions, Group Policy processing (registry / security policy background
+  refresh, RSoP data generation), cryptography (FIPS, force-strong-key
+  protection), location services, Microsoft Store lockdown, Windows Ink
+  Workspace, Windows Copilot, Windows spotlight 3rd-party content, app
+  privacy (voice activation on lock), corporate Windows Error Reporting, app
+  compatibility inventory, Sound Recorder, W32time NTP client, Wi-Fi
+  auto-hotspot behaviour, and Windows Explorer hardening (file extensions,
+  Security tab, CD burning, per-profile file sharing).
+- **13 account-policy checks** (password history/age/length/complexity,
+  reversible encryption, lockout threshold/duration/reset, admin lockout,
+  relax-min-length, anonymous SID translation, force logoff) via `secedit`.
+- **27 user-rights-assignment checks** via `secedit`, compared by SID
+  (incl. Change system time, Allow log on through RDS, Deny batch/service
+  logon).
 - **30 advanced-audit-policy subcategory checks** via `auditpol`, compared by
   GUID and numeric value.
 - **4 built-in account checks** (Administrator/Guest disabled & renamed) via
