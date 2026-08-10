@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Audits every check defined in Policies.json and writes a colour-coded
-    Excel workbook with the columns: Policy Name, Scope, Policy Path,
+    Excel workbook with the columns: Policy Name, Scope, Source, Policy Path,
     Registry Path (or data source), Setting name, Current Value, Recommended
     Value, Status and Priority (plus Category and Notes for context).
 
@@ -17,6 +17,10 @@
         LocalUser       - built-in account status/renaming  (Get-LocalUser)
         OptionalFeature - SMBv1, PowerShell 2.0, etc.       (DISM API)
         AppLocker       - effective application control     (Get-AppLockerPolicy)
+        Intune / MDM    - HKLM\SOFTWARE\Microsoft\PolicyManager\current tree
+                          (adds a Source column; discovered MDM CSP settings
+                          not otherwise covered are appended as informational
+                          "Intune-Managed" rows). Use -SkipIntune to disable.
     secedit /export and auditpol /backup only WRITE a temp file - they never
     modify configuration.
 
@@ -57,7 +61,8 @@ param(
     [string]$PoliciesPath,
     [string]$OutputPath,
     [switch]$IncludeCsv,
-    [switch]$OpenWhenDone
+    [switch]$OpenWhenDone,
+    [switch]$SkipIntune
 )
 
 # --------------------------------------------------------------------------
@@ -128,6 +133,117 @@ function ConvertTo-DisplayString {
     if ($null -eq $Value) { return '<not set>' }
     if ($Value -is [System.Array]) { return ($Value -join '; ') }
     return [string]$Value
+}
+
+# --------------------------------------------------------------------------
+#  Intune / MDM discovery
+#  Enumerates HKLM\SOFTWARE\Microsoft\PolicyManager\current\{device,user}
+#  which is where the OS stores the effective (post-merge) MDM CSP values.
+#  Also reports which providers are enrolled (Intune / SCCM / etc.).
+# --------------------------------------------------------------------------
+function Get-MdmEnrollmentInfo {
+    $out = [pscustomobject]@{ IsEnrolled=$false; Providers=@(); UPN='' }
+    $enrollRoot = 'SOFTWARE\Microsoft\Enrollments'
+    $key = $null
+    try {
+        $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($enrollRoot)
+        if (-not $key) { return $out }
+        foreach ($sub in $key.GetSubKeyNames()) {
+            # skip status/OwnerAccountId leaves
+            if ($sub -notmatch '^[0-9A-Fa-f-]{36}$' -and $sub -notmatch '^\{?[0-9A-Fa-f-]{36}\}?$') { continue }
+            $ek = $key.OpenSubKey($sub)
+            if (-not $ek) { continue }
+            try {
+                $enrollType = $ek.GetValue('EnrollmentType')
+                $providerId = $ek.GetValue('ProviderID')
+                $upn        = $ek.GetValue('UPN')
+                if ($providerId) {
+                    $out.Providers += ([string]$providerId)
+                    if ($upn) { $out.UPN = [string]$upn }
+                    # EnrollmentType 6 = MDM (user), 7 = MDM (device)
+                    if ($enrollType -in 6,7) { $out.IsEnrolled = $true }
+                }
+            } finally { $ek.Close() }
+        }
+    } catch {} finally { if ($key) { $key.Close() } }
+    $out.Providers = @($out.Providers | Select-Object -Unique)
+    return $out
+}
+
+function Get-IntuneAppliedPolicy {
+    # Returns an array of hashtables:
+    #   @{ Scope='Device'|'User'; Area='<Area>'; SubKey='<relative subkey>';
+    #      Name='<value name>'; Value=<raw>; Type='<REG_*>' }
+    # by recursively walking HKLM\SOFTWARE\Microsoft\PolicyManager\current\<scope>.
+    #
+    # Skips housekeeping subkeys (Result, RebootRequired, winningProvider, etc.)
+    # and empty ADMX-holder subkeys.
+    $skipSub = @(
+        'Result','WinningProvider','RebootRequired','Persistent',
+        'ExternallyManagedDeviceLock','ExternallyManaged','GPCache'
+    )
+    $out = New-Object System.Collections.Generic.List[object]
+
+    foreach ($scope in 'device','user') {
+        $root = "SOFTWARE\Microsoft\PolicyManager\current\$scope"
+        $rk = $null
+        try {
+            $rk = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($root)
+        } catch { $rk = $null }
+        if (-not $rk) { continue }
+        try {
+            foreach ($area in $rk.GetSubKeyNames()) {
+                $ak = $rk.OpenSubKey($area)
+                if (-not $ak) { continue }
+                try {
+                    # Walk recursively
+                    $stack = New-Object System.Collections.Generic.Stack[object]
+                    $stack.Push(@{ Key = $ak; Rel = '' })
+                    while ($stack.Count -gt 0) {
+                        $item = $stack.Pop()
+                        $k = $item.Key
+                        $rel = $item.Rel
+                        try {
+                            foreach ($n in $k.GetValueNames()) {
+                                if (-not $n) { continue }
+                                if ($n -eq 'MergedPolicyBlob') { continue }
+                                if ($n -in 'RebootRequired','WinningProvider','Persistent') { continue }
+                                $val = $k.GetValue($n)
+                                $kind = $k.GetValueKind($n).ToString()
+                                $out.Add(@{
+                                    Scope   = $(if ($scope -eq 'device') { 'Computer' } else { 'User' })
+                                    Area    = $area
+                                    SubKey  = $rel
+                                    Name    = $n
+                                    Value   = $val
+                                    Type    = $kind
+                                })
+                            }
+                            foreach ($childName in $k.GetSubKeyNames()) {
+                                if ($skipSub -contains $childName) { continue }
+                                $child = $k.OpenSubKey($childName)
+                                if ($child) {
+                                    $childRel = if ($rel) { "$rel\$childName" } else { $childName }
+                                    $stack.Push(@{ Key = $child; Rel = $childRel })
+                                }
+                            }
+                        } finally {
+                            if ($k -ne $ak) { $k.Close() }
+                        }
+                    }
+                } finally { $ak.Close() }
+            }
+        } finally { $rk.Close() }
+    }
+    return ,$out.ToArray()
+}
+
+function Get-IntuneOverlapKey {
+    # Build a lookup key so we can detect when the same value name is set both
+    # in Policies.json and in the MDM CSP tree.  We index by the value name
+    # alone since MDM CSPs use friendly ADMX names, not the raw registry name.
+    param([hashtable]$Row)
+    return ([string]$Row.Name).ToLowerInvariant()
 }
 
 function Test-Numeric {
@@ -282,6 +398,40 @@ if ($needsAppLocker -and (Get-Command Get-AppLockerPolicy -ErrorAction SilentlyC
 }
 
 # --------------------------------------------------------------------------
+#  Intune / MDM collection
+# --------------------------------------------------------------------------
+$mdmInfo   = $null
+$intuneRaw = @()
+$intuneByName = @{}
+# Explicit OS guard: [Microsoft.Win32.Registry] throws a non-catchable static
+# init exception on non-Windows PowerShell, so short-circuit outside Windows.
+$onWindows = ($PSVersionTable.PSVersion.Major -le 5) -or $IsWindows
+if (-not $SkipIntune -and -not $onWindows) {
+    Write-Warning "Intune discovery is only supported on Windows; skipping."
+    $SkipIntune = $true
+}
+if (-not $SkipIntune) {
+    try {
+        $mdmInfo   = Get-MdmEnrollmentInfo
+        $intuneRaw = Get-IntuneAppliedPolicy
+    } catch {
+        Write-Warning ("Intune discovery failed: {0}" -f $_.Exception.Message)
+        $intuneRaw = @()
+    }
+    foreach ($row in $intuneRaw) {
+        $k = ([string]$row.Name).ToLowerInvariant()
+        if (-not $intuneByName.ContainsKey($k)) { $intuneByName[$k] = @() }
+        $intuneByName[$k] += ,$row
+    }
+    if ($mdmInfo -and $mdmInfo.IsEnrolled) {
+        Write-Host ("  MDM enrolled : yes ({0})" -f ($mdmInfo.Providers -join ', ')) -ForegroundColor Cyan
+    } else {
+        Write-Host "  MDM enrolled : no (no active Intune/MDM enrollment detected)" -ForegroundColor DarkGray
+    }
+    Write-Host ("  Discovered {0} MDM CSP setting(s) from PolicyManager." -f $intuneRaw.Count) -ForegroundColor Green
+}
+
+# --------------------------------------------------------------------------
 #  Run the audit
 # --------------------------------------------------------------------------
 $results = foreach ($p in $policies) {
@@ -399,10 +549,29 @@ $results = foreach ($p in $policies) {
         }
     }
 
+    # Determine Source: GPO/Local by default; upgrade to GPO+Intune if the
+    # same setting name is also present in the MDM CSP tree.
+    $source = 'GPO/Local'
+    $mdmMatches = @()
+    if (-not $SkipIntune -and $p.SettingName) {
+        $k = ([string]$p.SettingName).ToLowerInvariant()
+        if ($intuneByName.ContainsKey($k)) {
+            $mdmMatches = $intuneByName[$k]
+            $source = 'GPO+Intune'
+        }
+    }
+    $notesOut = $p.Notes
+    if ($mdmMatches.Count -gt 0) {
+        $areas = ($mdmMatches | ForEach-Object { $_.Area } | Select-Object -Unique) -join ', '
+        if ($notesOut) { $notesOut = "$notesOut | Intune area: $areas" }
+        else           { $notesOut = "Intune area: $areas" }
+    }
+
     [pscustomobject][ordered]@{
         Category          = $p.Category
         'Policy Name'     = $p.PolicyName
         Scope             = $p.Scope
+        Source            = $source
         'Policy Path'     = $p.PolicyPath
         'Registry Path'   = $p.RegistryPath
         'Setting name'    = $p.SettingName
@@ -410,7 +579,49 @@ $results = foreach ($p in $policies) {
         'Recommended Value' = [string]$p.RecommendedValue
         Status            = $status
         Priority          = $p.Priority
-        Notes             = $p.Notes
+        Notes             = $notesOut
+    }
+}
+
+# --------------------------------------------------------------------------
+#  Append discovered Intune-only rows (settings applied by MDM CSP that are
+#  not already covered by a check in Policies.json).
+# --------------------------------------------------------------------------
+if (-not $SkipIntune -and $intuneRaw.Count -gt 0) {
+    $coveredNames = @{}
+    foreach ($p in $policies) {
+        if ($p.SettingName) {
+            $coveredNames[([string]$p.SettingName).ToLowerInvariant()] = $true
+        }
+    }
+    $intuneRowsAppended = 0
+    $intuneOnly = foreach ($m in $intuneRaw) {
+        $lname = ([string]$m.Name).ToLowerInvariant()
+        if ($coveredNames.ContainsKey($lname)) { continue }
+        $scopeRoot = if ($m.Scope -eq 'Computer') { 'device' } else { 'user' }
+        $sub       = if ($m.SubKey) { "\{0}" -f $m.SubKey } else { '' }
+        $regPath   = "HKLM\SOFTWARE\Microsoft\PolicyManager\current\{0}\{1}{2}" -f $scopeRoot, $m.Area, $sub
+        $polPath   = "MDM CSP: {0}{1}" -f $m.Area, $(if ($m.SubKey) { "\$($m.SubKey)" } else { '' })
+        $curDisp   = ConvertTo-DisplayString $m.Value
+        [pscustomobject][ordered]@{
+            Category          = "Intune (discovered)"
+            'Policy Name'     = ("{0}: {1}" -f $m.Area, $m.Name)
+            Scope             = $m.Scope
+            Source            = 'Intune'
+            'Policy Path'     = $polPath
+            'Registry Path'   = $regPath
+            'Setting name'    = $m.Name
+            'Current Value'   = $curDisp
+            'Recommended Value' = '(Intune-managed)'
+            Status            = 'Intune-Managed'
+            Priority          = 'Info'
+            Notes             = ("MDM CSP value applied by Intune/MDM; type {0}." -f $m.Type)
+        }
+        $intuneRowsAppended++
+    }
+    if ($intuneOnly) {
+        $results = @($results) + @($intuneOnly)
+        Write-Host ("  Appended {0} Intune-only row(s) for undiscovered MDM CSP settings." -f @($intuneOnly).Count) -ForegroundColor Green
     }
 }
 
@@ -422,20 +633,26 @@ $configured  = @($results | Where-Object Status -eq 'Configured').Count
 $mismatch    = @($results | Where-Object Status -eq 'Mismatch').Count
 $notConfig   = @($results | Where-Object Status -eq 'Not Configured').Count
 $unknown     = @($results | Where-Object Status -eq 'Unknown').Count
-$assessed    = $total - $unknown
+$intuneOnly  = @($results | Where-Object Status -eq 'Intune-Managed').Count
+# Compliance score reflects only assessable rows (exclude Unknown + Intune-only
+# informational rows).
+$assessed    = $total - $unknown - $intuneOnly
 $score       = if ($assessed) { [math]::Round(($configured / $assessed) * 100, 1) } else { 0 }
 
-$nonCompliant = @($results | Where-Object { $_.Status -ne 'Configured' -and $_.Status -ne 'Unknown' })
+$nonCompliant = @($results | Where-Object { $_.Status -notin 'Configured','Unknown','Intune-Managed' })
 $ncHigh   = @($nonCompliant | Where-Object Priority -eq 'High').Count
 $ncMedium = @($nonCompliant | Where-Object Priority -eq 'Medium').Count
 $ncLow    = @($nonCompliant | Where-Object Priority -eq 'Low').Count
 
 Write-Host ""
 Write-Host "Results" -ForegroundColor Cyan
-Write-Host ("  Total checks   : {0}" -f $total)
+Write-Host ("  Total rows     : {0}" -f $total)
 Write-Host ("  Configured     : {0}" -f $configured) -ForegroundColor Green
 Write-Host ("  Mismatch       : {0}" -f $mismatch)   -ForegroundColor Red
 Write-Host ("  Not Configured : {0}" -f $notConfig)  -ForegroundColor Yellow
+if ($intuneOnly -gt 0) {
+    Write-Host ("  Intune-Managed : {0}  (discovered MDM CSP settings, no baseline recommendation)" -f $intuneOnly) -ForegroundColor Cyan
+}
 if ($unknown -gt 0) {
     Write-Host ("  Unknown        : {0}  (run as Administrator to assess these)" -f $unknown) -ForegroundColor DarkGray
 }
@@ -637,12 +854,13 @@ function Get-StatusStyle {
         'Mismatch'       { 3 }
         'Not Configured' { 4 }
         'Unknown'        { 8 }
+        'Intune-Managed' { 8 }
         default          { 5 }
     }
 }
 
 # ---- Build the "Audit Results" sheet ----
-$headers = 'Category','Policy Name','Scope','Policy Path','Registry Path','Setting name','Current Value','Recommended Value','Status','Priority','Notes'
+$headers = 'Category','Policy Name','Scope','Source','Policy Path','Registry Path','Setting name','Current Value','Recommended Value','Status','Priority','Notes'
 $dataRows = New-Object System.Collections.ArrayList
 [void]$dataRows.Add(@($headers | ForEach-Object { @{ V = $_; S = 1 } }))
 
@@ -652,6 +870,7 @@ foreach ($row in $results) {
         @{ V = $row.Category;             S = 5 },
         @{ V = $row.'Policy Name';        S = 5 },
         @{ V = $row.Scope;                S = 5 },
+        @{ V = $row.Source;               S = 5 },
         @{ V = $row.'Policy Path';        S = 5 },
         @{ V = $row.'Registry Path';      S = 5 },
         @{ V = $row.'Setting name';       S = 5 },
@@ -667,17 +886,18 @@ $cols = @(
     @{ Min=1;  Max=1;  Width=24 },
     @{ Min=2;  Max=2;  Width=48 },
     @{ Min=3;  Max=3;  Width=10 },
-    @{ Min=4;  Max=4;  Width=55 },
-    @{ Min=5;  Max=5;  Width=52 },
-    @{ Min=6;  Max=6;  Width=30 },
-    @{ Min=7;  Max=7;  Width=18 },
+    @{ Min=4;  Max=4;  Width=14 },
+    @{ Min=5;  Max=5;  Width=55 },
+    @{ Min=6;  Max=6;  Width=52 },
+    @{ Min=7;  Max=7;  Width=30 },
     @{ Min=8;  Max=8;  Width=18 },
-    @{ Min=9;  Max=9;  Width=16 },
-    @{ Min=10; Max=10; Width=10 },
-    @{ Min=11; Max=11; Width=45 }
+    @{ Min=9;  Max=9;  Width=18 },
+    @{ Min=10; Max=10; Width=16 },
+    @{ Min=11; Max=11; Width=10 },
+    @{ Min=12; Max=12; Width=45 }
 )
 $lastRow = $dataRows.Count
-$auditSheet = Build-SheetXml -Rows $dataRows.ToArray() -Cols $cols -Freeze $true -AutoFilterRef ("A1:K{0}" -f $lastRow)
+$auditSheet = Build-SheetXml -Rows $dataRows.ToArray() -Cols $cols -Freeze $true -AutoFilterRef ("A1:L{0}" -f $lastRow)
 
 # ---- Build the "Summary" sheet ----
 $sumRows = New-Object System.Collections.ArrayList
@@ -687,12 +907,21 @@ $sumRows = New-Object System.Collections.ArrayList
 [void]$sumRows.Add(@( @{ V='User';            S=6 }, @{ V=("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME); S=0 } ))
 [void]$sumRows.Add(@( @{ V='OS';              S=6 }, @{ V=((Get-CimInstance Win32_OperatingSystem).Caption + ' (build ' + [System.Environment]::OSVersion.Version.Build + ')'); S=0 } ))
 [void]$sumRows.Add(@( @{ V='Run elevated';    S=6 }, @{ V=$isAdmin; S=0 } ))
+if (-not $SkipIntune) {
+    $mdmStatus = if ($mdmInfo -and $mdmInfo.IsEnrolled) { ('Yes - ' + ($mdmInfo.Providers -join ', ')) } else { 'No' }
+    [void]$sumRows.Add(@( @{ V='MDM enrolled';    S=6 }, @{ V=$mdmStatus; S=0 } ))
+    if ($mdmInfo.UPN) {
+        [void]$sumRows.Add(@( @{ V='MDM UPN';         S=6 }, @{ V=$mdmInfo.UPN; S=0 } ))
+    }
+    [void]$sumRows.Add(@( @{ V='MDM CSP settings'; S=6 }, @{ V=$intuneRaw.Count; S=0 } ))
+}
 [void]$sumRows.Add(@( @{ V=''; S=0 } ))
 [void]$sumRows.Add(@( @{ V='Metric'; S=7 }, @{ V='Count'; S=7 } ))
-[void]$sumRows.Add(@( @{ V='Total checks';    S=6 }, @{ V=$total;      S=5 } ))
+[void]$sumRows.Add(@( @{ V='Total rows';      S=6 }, @{ V=$total;      S=5 } ))
 [void]$sumRows.Add(@( @{ V='Configured';      S=6 }, @{ V=$configured; S=2 } ))
 [void]$sumRows.Add(@( @{ V='Mismatch';        S=6 }, @{ V=$mismatch;   S=3 } ))
 [void]$sumRows.Add(@( @{ V='Not Configured';  S=6 }, @{ V=$notConfig;  S=4 } ))
+[void]$sumRows.Add(@( @{ V='Intune-Managed';  S=6 }, @{ V=$intuneOnly; S=8 } ))
 [void]$sumRows.Add(@( @{ V='Unknown (needs admin)'; S=6 }, @{ V=$unknown; S=8 } ))
 [void]$sumRows.Add(@( @{ V='Compliance score';S=6 }, @{ V=("{0}% (of {1} assessed)" -f $score, $assessed); S=5 } ))
 [void]$sumRows.Add(@( @{ V=''; S=0 } ))
