@@ -1,1 +1,3 @@
 claude/
+.cis-build/
+__pycache__/

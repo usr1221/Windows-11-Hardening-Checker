@@ -26,8 +26,43 @@ modify configuration.)
 | File | Purpose |
 |------|---------|
 | `Invoke-Win11HardeningAudit.ps1` | The audit engine + self-contained `.xlsx` writer |
-| `Policies.json` | The policy definitions (registry paths, recommended values, priorities). Edit this to add/adjust checks |
+| `Policies.json` | Default policy set — ASD/ACSC "Hardening Microsoft Windows 11 workstations" |
+| `Policies-CIS.json` | **CIS Microsoft Windows 11 Enterprise Benchmark v5.0.1, Level 1** — 409 checks covering all 393 Level 1 recommendations of the benchmark |
+| `Policies-VDI.json` | The CIS set reviewed for **non-persistent VDI** — 385 checks (24 dropped as not applicable, 5 re-valued, 19 tolerant of a removed service) |
+| `Policies-VDI-Decisions.csv` | The full audit trail: every CIS check with its VDI decision (Keep / Adjusted / Tolerant / Excluded), both values, both operators and the rationale |
+| `helpers/` | Generators that rebuild the CIS and VDI sets from the CIS-CAT report + benchmark PDF — see `helpers/README.md` |
 | `README.md` | This file |
+
+### The CIS and VDI policy sets
+
+`Policies-CIS.json` is generated from the CIS-CAT HTML report plus the CIS
+benchmark PDF: the registry location, value type and expected value of each
+recommendation come from the benchmark's own *Audit* section, and are
+cross-checked against the OVAL criteria in the report. Every entry carries
+`CisSection`, `CisLevel` and the **full, untruncated** description, rationale,
+impact and default value in `Notes`.
+
+`Policies-VDI.json` is derived from it, with each setting reviewed against a
+pooled, recomposed desktop. The five re-valued checks are:
+
+| CIS | Setting | CIS | VDI | Why |
+|-----|---------|-----|-----|-----|
+| 2.3.6.4 | Disable machine account password changes | `0` | `1` | A password change made after cloning is discarded at recompose while AD keeps it — the secure channel breaks |
+| 18.10.94.2.1 | Configure Automatic Updates | `0` (enabled) | `1` (disabled) | The desktop discards what it installs; patch the gold image instead of having the whole pool download the same updates |
+| 18.9.5.5 | Credential Guard | `1` (UEFI lock) | `1` or `2` | UEFI lock persists in VM firmware and blocks recompose/redeploy workflows; Credential Guard itself stays required |
+| 18.10.17.1 | Delivery Optimization download mode | not `3` | `0` or `99` | Peering between identical short-lived VMs on one host is pointless I/O |
+| 18.10.42.13.4 | Catch-up quick scan | `= 7` | `>= 7` | Meaningless on a desktop rebuilt daily; scan randomisation and platform exclusions are what matter |
+
+Run them with `-PoliciesPath`:
+
+```powershell
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-CIS.json
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-VDI.json
+```
+
+Both sets are generated, not hand-maintained. To rebuild them after a benchmark
+update, drop the new CIS-CAT report and benchmark PDF in the repository root and
+run the pipeline in `helpers/` — see `helpers/README.md`.
 
 ## Requirements
 
@@ -95,6 +130,27 @@ auto-filters, containing the requested columns:
 > applied. In a few cases the Windows default is already secure, so treat
 > *Not Configured* as "needs review", not automatically "insecure".
 
+### Source column (GPO vs MDM/Intune)
+
+The **Source** column says where a setting most likely came from. It only ever
+reads `GPO+Intune` / `GPO+MDM` when the machine carries an **active MDM
+enrollment** — `HKLM\SOFTWARE\Microsoft\Enrollments\<GUID>` with
+`EnrollmentState = 1`, an MDM `EnrollmentType`, and a matching provider subtree.
+The settings themselves are then read from
+`HKLM\SOFTWARE\Microsoft\PolicyManager\providers\<GUID>`, i.e. what the MDM
+provider actually pushed, plus any area of the merged `current` tree whose
+`WinningProvider` is that enrollment.
+
+The merged `PolicyManager\current` tree is **not** treated as evidence of MDM
+management: Windows populates it with OS defaults and GP-injected values on
+machines that were never enrolled, which previously made a stand-alone or
+GPO-managed machine look Intune-managed. On a non-enrolled machine every row now
+reports `GPO/Local` and no MDM rows are added. Use `-SkipIntune` to skip the
+lookup entirely.
+
+Even when enrolled, the match is by CSP value name within the same scope, so the
+note says *"name match only — confirm in the MDM console"*.
+
 ### Priority
 
 Priorities reflect the relative risk. **High** items map to controls with the
@@ -132,6 +188,14 @@ All checks live in `Policies.json`. Each entry looks like:
 | `between` | recommended is `"min,max"`; current must fall inside (e.g. lockout threshold `"1,5"`) |
 | `oneof` | matches any value in a comma-separated list (e.g. `"1,2"`) |
 | `contains` | current value contains every comma-separated token (used for multi-field values such as Hardened UNC Paths) |
+| `match` | current value matches the recommendation as a regex — `".+"` means "any non-empty value" (logon banner text, firewall log path) |
+| `exists` | the value is present and non-empty |
+| `notexist` | compliant only when the value is **absent** (e.g. `DisableBkGndGroupPolicy`) |
+
+An optional `"AbsentIsCompliant": true` accepts a missing value as compliant —
+used for CIS items worded *"Disabled **or Not Installed**"* (services that an
+image may have removed) and for list values that must be empty. The report shows
+`<not set - acceptable>` for those.
 
 `SecEditPrivilege` checks use set operators against `RecommendedSids`:
 
