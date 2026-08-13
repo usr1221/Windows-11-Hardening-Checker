@@ -277,7 +277,7 @@
     "CisSection": "2.2.5",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
-    "VDIRationale": "VDI agents (Citrix VDA, Horizon Agent, AVD/RDS) require their service accounts to hold specific logon rights - verify the agent still starts after applying user-rights hardening.",
+    "VDIRationale": "On Citrix HDX single-session VDI this - not 2.2.6 - is the right the ICA logon uses, so the pool assignment group must be inside \"Users\" (it normally is, via Domain Users). VDI agents (Citrix VDA, Horizon Agent, AVD/RDS) also require their service accounts to hold specific logon rights - verify the agent still starts after applying user-rights hardening.",
     "Notes": "CIS 2.2.5 (L1). Description: Description: This policy setting determines which users can interactively log on to computers in your environment. Logons that are initiated by pressing the CTRL+ALT+DEL key sequence on the client computer keyboard require this user right. Users who attempt to log on through Terminal Services / Remote Desktop Services or IIS also require this user right. The recommended state for this setting is: Administrators, Users . Note: The Guest account is also assigned this user right by default. Although this account is disabled by default, it's recommended that you configure this setting through Group Policy. However, this user right should generally be restricted to the Administrators and Users groups. Assign this user right to the Backup Operators group if your organization requires that they have this capability. Rationale: Any account with the Allow log on locally user right can log on at the console of the computer. If you do not restrict this user right to legitimate users who need to be able to log on to the console of the computer, unauthorized users could download and run malicious software to elevate their privileges. Impact: If you remove these default groups, you could limit the abilities of users who are assigned to specific administrative roles in your environment. You should confirm that delegated activities will not be adversely affected by any changes that you make to the Allow log on locally user right. Default value: Administrators, Backup Operators, Guest, Users."
   },
   {
@@ -296,7 +296,7 @@
     "CisSection": "2.2.6",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
-    "VDIRationale": "This is the right that governs broker-mediated RDP logon. Keep Remote Desktop Users populated by the pool assignment group, not by individual accounts.",
+    "VDIRationale": "Governs RDP/RDS-based pools (AVD, Windows 365, RDS). Citrix HDX on a SINGLE-SESSION Windows 11 desktop does not use SeRemoteInteractiveLogonRight - the ICA session is an interactive logon, so \"Allow log on locally\" (2.2.5) is the right that must contain your pool assignment group. Keeping this one tight does not lock Citrix users out; it only governs the RDP fallback path.",
     "Notes": "CIS 2.2.6 (L1). Description: Description: This policy setting determines which users or groups have the right to log on as a Remote Desktop Services client. If your organization uses Remote Assistance as part of its help desk strategy, create a group and assign it this user right through Group Policy. If the help desk in your organization does not use Remote Assistance, assign this user right only to the Administrators group or use the Restricted Groups feature to ensure that no user accounts are part of the Remote Desktop Users group. Restrict this user right to the Administrators group, and possibly the Remote Desktop Users group, to prevent unwanted users from gaining access to computers on your network by means of the Remote Assistance feature. The recommended state for this setting is: Administrators, Remote Desktop Users . Note: The above list is to be treated as a whitelist, which implies that the above principals need not be present for assessment of this recommendation to pass. Note #2: In all versions of Windows prior to Windows 7, Remote Desktop Services was known as Terminal Services , so you should substitute the older term if comparing against an older OS. Rationale: Any account with the Allow log on through Remote Desktop Services user right can log on to the remote console of the computer. If you do not restrict this user right to legitimate users who need to log on to the console of the computer, unauthorized users could download and run malicious software to elevate their privileges. Impact: Removal of the Allow log on through Remote Desktop Services user right from other groups or membership changes in these default groups could limit the abilities of users who perform specific administrative roles in your environment. You should confirm that delegated activities will not be adversely affected. Default value: Administrators, Remote Desktop Users."
   },
   {
@@ -1081,6 +1081,7 @@
     "CisSection": "2.3.7.4",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "A logon banner interrupts the credential flow before the desktop appears. Citrix pass-through / single sign-on hands credentials to Winlogon, and the banner forces an extra acknowledgement in the ICA session - test SSO with the banner in place before rolling it to the pool. The banner is usually a legal requirement, so treat this as \"schedule the test\", not \"consider dropping it\".",
     "Notes": "CIS 2.3.7.4 (L1). Description: Description: This policy setting specifies a text message that is displayed to users when they log on. Set the following group policy to a value that is consistent with the security and operational requirements of the organization. Rationale: Displaying a warning message before logon may help prevent malicious logins by a threat actor warning of the consequences of their misconduct. It also helps to reinforce corporate policy by notifying employees of the appropriate policy during the logon process. This text is often used for legal reasons, for example, to warn users about the ramifications of misusing company information or to warn them that their actions may be audited. Note: Any warning that is displayed should first be approved by the organization’s legal and human resources representative. Impact: Users will have to acknowledge a dialog box containing the configured text before they can log on to the computer. Note: Windows Vista and Windows XP Professional support logon banners that can exceed 512 characters in length and that can also contain carriage-return line-feed sequences. However, Windows 2000-based clients cannot interpret and display these messages. You must use a Windows 2000-based computer to create a logon message policy that applies to Windows 2000-based computers. Default value: No message. Any non-empty logon banner text satisfies the check."
   },
   {
@@ -1098,6 +1099,7 @@
     "CisSection": "2.3.7.5",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "See 2.3.7.4 - verify the banner does not break Citrix pass-through/SSO before pool-wide rollout.",
     "Notes": "CIS 2.3.7.5 (L1). Description: Description: This policy setting specifies the text displayed in the title bar of the window that is displayed to users when they log on to the system. Configure this setting in a manner that is consistent with the security and operational requirements of the organization. Rationale: Displaying a warning message before logon may help prevent malicious logins by a threat actor warning of the consequences of their misconduct. It also helps to reinforce corporate policy by notifying employees of the appropriate policy during the logon process. This text is often used for legal reasons, for example, to warn users about the ramifications of misusing company information or to warn them that their actions may be audited. Note: Any warning that is displayed should first be approved by the organization’s legal and human resources representative. Impact: Users will have to acknowledge a dialog box with the configured title before they can log on to the computer. Default value: No message. Any non-empty logon banner title satisfies the check."
   },
   {
@@ -1646,6 +1648,7 @@
     "CisSection": "2.3.11.12",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Choose Audit (1) before Deny (2) on VDI. Profile-container and redirection shares are very often reached through a CNAME/DFS alias with no matching SPN, which silently falls back to NTLM - \"Deny all\" then fails the FSLogix/UPM mount and the user lands on a temporary profile. Run in Audit, read the NTLM operational log for the profile share, fix the SPNs, then deny.",
     "Notes": "CIS 2.3.11.12 (L1). Description: Description: This policy setting allows the auditing of outgoing NTLM traffic. Events for this setting are recorded in the operational event log (e.g. Applications and Services Log\\Microsoft\\Windows\\NTLM). The recommended state for this setting is: Audit all . Configuring this setting to Deny All also conforms to the benchmark. Note: Configuring this setting to Deny All is more secure, however it could have a negative impact on applications that still require NTLM. Test carefully before implementing the Deny All value. Rationale: Auditing and monitoring NTLM traffic can assist in identifying systems using this outdated authentication protocol, so they can be remediated to using a more secure protocol, such as Kerberos. The log information gathered can also assist in forensic investigations after a malicious attack. NTLM and NTLMv2 authentication is vulnerable to various attacks, including SMB relay, man-in-the-middle, and brute force attacks. Reducing and eliminating NTLM authentication in an environment reduces the risk of a threat actor gaining access to systems on the network. Impact: The event log will contain information on outgoing NTLM authentication traffic. Default value: Allow all. (The client can authenticate to remote servers by using NTLM authentication.)"
   },
   {
@@ -1799,6 +1802,7 @@
     "CisSection": "2.3.17.7",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "The secure desktop is rendered through the ICA stack. Older VDA versions rendered it slowly or as a black overlay; current versions handle it, but if users report hangs on elevation prompts this is the setting to test first. Keep it enabled - it is what stops an in-session process spoofing the consent dialog on a shared desktop.",
     "Notes": "CIS 2.3.17.7 (L1). Description: Description: This policy setting controls whether the elevation request prompt is displayed on the interactive user's desktop or the secure desktop. The recommended state for this setting is: Enabled . Rationale: Standard elevation prompt dialog boxes can be spoofed, which may cause users to disclose their passwords to malicious software. The secure desktop presents a very distinct appearance when prompting for elevation, where the user desktop dims, and the elevation prompt UI is more prominent. This increases the likelihood that users who become accustomed to the secure desktop will recognize a spoofed elevation prompt dialog box and not fall for the trick. Impact: None - this is the default behavior. Default value: Enabled. (All elevation requests go to the secure desktop regardless of prompt behavior policy settings for administrators and standard users.)"
   },
   {
@@ -2449,6 +2453,7 @@
     "CisSection": "9.3.2",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Public-profile rules only bite if the vNIC is CLASSIFIED Public. On a freshly provisioned VM the Network Location Awareness service can win the race against domain-controller contact and stick the adapter in Public, at which point default-deny inbound plus 9.3.4 blocks the HDX listener (1494/2598) and the session lands on a black screen. Confirm the pool classifies as Domain on first boot before enforcing.",
     "Notes": "CIS 9.3.2 (L1). Description: Description: This setting determines the behavior for inbound connections that do not match an inbound firewall rule. The recommended state for this setting is: Block (default) . Rationale: If the firewall allows all traffic to access the system, then a threat actor may be more easily able to remotely exploit a weakness in a network service. Impact: None - this is the default behavior. Default value: Block (default). (The Windows Firewall with Advanced Security will block all inbound connections that do not match an inbound firewall rule in this profile.)"
   },
   {
@@ -2483,6 +2488,7 @@
     "CisSection": "9.3.4",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "The riskiest check in the firewall group for Citrix. Local rule merge OFF means the rules the VDA installer wrote locally are IGNORED in the Public profile. CIS only requires this for Public, so the Domain profile keeps the VDA rules - but a VM that misclassifies as Public (see 9.3.2) loses HDX inbound entirely. Either guarantee Domain classification, or push the VDA port rules from GPO so they survive the merge being off.",
     "Notes": "CIS 9.3.4 (L1). Description: Description: This setting controls whether local administrators are allowed to create local firewall rules that apply together with firewall rules configured by Group Policy. The recommended state for this setting is: No . Note: When the Apply local firewall rules setting is configured to No , it's recommended to also configure the Display a notification setting to No . Otherwise, users will continue to receive messages that ask if they want to unblock a restricted inbound connection, but the user's response will be ignored. Rationale: When in the Public profile, there should be no special local firewall exceptions per computer. These settings should be managed by a centralized policy. Impact: Administrators can still create firewall rules, but the rules will not be applied. Default value: Yes (default). (Firewall rules created by administrators will be applied.)"
   },
   {
@@ -3286,6 +3292,7 @@
     "CisSection": "18.5.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Auto-logon must stay disabled on a normal pool. If you run a kiosk/task-worker pool that relies on auto-logon, that pool needs its own exception - do not carve a hole in the shared baseline.",
     "Notes": "CIS 18.5.1 (L1). Description: Description: This setting is separate from the Welcome screen feature in Windows XP and Windows Vista; if that feature is disabled, this setting is not disabled. If you configure a computer for automatic logon, anyone who can physically gain access to the computer can also gain access to everything that is on the computer, including any network or networks to which the computer is connected. Also, if you enable automatic logon, the password is stored in the registry in plaintext, and the specific registry key that stores this value is remotely readable by the Authenticated Users group. For additional information, see Microsoft Knowledge Base article 324737: How to turn on automatic logon in Windows . The recommended state for this setting is: Disabled . Rationale: If you configure a computer for automatic logon, anyone who can physically gain access to the computer can also gain access to everything that is on the computer, including any network or networks that the computer is connected to. Also, if you enable automatic logon, the password is stored in the registry in plaintext. The specific registry key that stores this setting is remotely readable by the Authenticated Users group. As a result, this entry is appropriate only if the computer is physically secured and if you ensure that untrusted users cannot remotely see the registry. Impact: None - this is the default behavior. Default value: Disabled."
   },
   {
@@ -3662,6 +3669,7 @@
     "CisSection": "18.6.8.6",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Applies to the SMB CLIENT, so it governs how this desktop reaches the profile-container and redirection shares. Confirm the file server or NAS appliance (NetApp, Nutanix Files, Isilon, Azure Files) negotiates 3.1.1 - an appliance capped at 3.0.2 will refuse the mount and the user gets a temporary profile.",
     "Notes": "CIS 18.6.8.6 (L1). Description: Description: This policy settings controls the minimum version of Server Message Block (SMB) protocol that can be used on the system. The recommended state for this setting is: Enabled: 3.1.1 . Note: This group policy setting does not prevent the use of SMBv1 if it is installed and enabled on the system. If the following recommendations are configured as prescribed in this benchmark, SMBv1 will be disabled on the system: Configure SMB v1 client driver and Configure SMB v1 server . Rationale: The newer, more modern version of SMB (v3) is supported and available on all currently supported Microsoft Windows OSes. SMBv1 is no longer enabled by default due to its security risks, and although SMBv2 is more robust than v1, it does not support encryption like its successor. Impact: If older legacy (unsupported) Windows OSes that do not support SMB v3.1.1 are present in the environment, this setting may affect backward compatibility with them. For example, Windows 8.1 and Windows Server 2012 R2 and older. This setting may also affect connecting to third-party devices and appliances that do not support SMB v3.1.1. Default value: Disabled. (SMB v2.0 or higher are enabled by default.)"
   },
   {
@@ -3679,6 +3687,7 @@
     "CisSection": "18.6.8.7",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Same warning as 18.6.8.6 and higher risk: the client will refuse any share that cannot do SMB3 encryption. Verify the FSLogix/UPM share has encryption enabled before enforcing, and budget for the CPU cost - every VHDX profile mount in the pool is now encrypted traffic.",
     "Notes": "CIS 18.6.8.7 (L1). Description: Description: This policy setting controls whether the SMB client will require encryption. The recommended state for this setting is: Enabled . Warning: The SMB server must support and have SMB encryption enabled (requires SMB v3.0 or later). Rationale: The newer, more modern version of SMB (v3) is supported and available on all currently supported Microsoft Windows OSes. SMBv1 is no longer enabled by default due to its security risks, and although SMBv2 is more robust than v1, it does not support encryption like its successor. Impact: If older legacy (unsupported) Windows OSes that do not support encryption are present in the environment, this setting may affect backward compatibility with them. For example, Windows 7 and Windows Server 2008 R2 and older. This setting may also affect connecting to third-party devices and appliances that do not support SMB v3.0. Default value: Disabled. (The SMB client will not require encryption. However, SMB encryption may still be required by the server.)"
   },
   {
@@ -3730,6 +3739,7 @@
     "CisSection": "18.6.11.4",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Pairs with 9.3.2/9.3.4: if a VM misclassifies as Public, a non-elevated user cannot correct the network location, so the desktop stays in the Public profile for the whole session. Fix classification at the platform level rather than relying on users.",
     "Notes": "CIS 18.6.11.4 (L1). Description: Description: This policy setting determines whether to require domain users to elevate when setting a network's location. The recommended state for this setting is: Enabled . Rationale: Allowing regular users to set a network location increases the risk and attack surface. Impact: Domain users must elevate when setting a network's location. Default value: Disabled. (Users can set a network's location without elevating.)"
   },
   {
@@ -3987,6 +3997,7 @@
     "CisSection": "18.7.12",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Point and Print does not carry Citrix Universal Print Driver traffic, so this does not break HDX printing. It does mean a user cannot add a network printer that needs a driver install - on a non-persistent desktop printers must be provisioned per session by GPO/Citrix policy anyway.",
     "Notes": "CIS 18.7.12 (L1). Description: Description: This policy setting controls whether computers will show a warning and a security elevation prompt when users create a new printer connection using Point and Print. The recommended state for this setting is: Enabled: Show warning and elevation prompt . Note: On August 10, 2021, Microsoft announced a Point and Print Default Behavior Change which modifies the default Point and Print driver installation and update behavior to require Administrator privileges. This is documented in KB5005652—Manage new Point and Print default driver installation behavior (CVE-2021-34481) . This change overrides all Point and Print Group Policy settings and ensures that only Administrators can install printer drivers from a print server using Point and Print. Rationale: Enabling Windows User Account Control (UAC) for the installation of new print drivers can help mitigate the PrintNightmare vulnerability ( CVE-2021-34527 ) and other Print Spooler attacks. Although the Point and Print default driver installation behavior overrides this setting, it is important to configure this as a backstop in the event that behavior is reversed. Impact: None - this is the default behavior. Default value: Enabled. (Windows computers will show a warning and a security elevation prompt when users create a new printer connection using Point and Print.)"
   },
   {
@@ -4021,6 +4032,7 @@
     "CisSection": "18.9.3.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Command lines in 4688 events multiply Security log volume, and on a pooled desktop that log is discarded at logoff. Only worth enabling alongside event forwarding, and size 18.10.26.2.2 for the extra volume.",
     "Notes": "CIS 18.9.3.1 (L1). Description: Description: This policy setting controls whether the process creation command line text is logged in security audit events when a new process has been created. The recommended state for this setting is: Enabled . Note: This feature that this setting controls was not originally supported in workstation OSes older than Windows 8.1. However, in February 2015 Microsoft added support for the feature to Windows 7 and Windows 8.0 via an update - KB3004375 . Therefore, this setting is also important to set on those older OSes. Rationale: Capturing process command line information in event logs can be very valuable when performing forensic investigations of attack incidents. Impact: Process command line information will be included in the event logs, which can contain sensitive or private information such as passwords or user data. Warning: There are potential risks of capturing credentials and sensitive information which could be exposed to users who have read-access to event logs. Microsoft provides a feature called \"Protected Event Logging\" to better secure event log data. For assistance with protecting event logging, visit: About Logging Windows - PowerShell | Microsoft Docs . Default value: Disabled. (Process command line information will not be included in Audit Process Creation events.)"
   },
   {
@@ -4056,112 +4068,6 @@
     "CisLevel": "L1",
     "VDIDecision": "Keep",
     "Notes": "CIS 18.9.4.2 (L1). Description: Description: When using credential delegation, devices provide an exportable version of credentials to the remote host. This exposes users to the risk of credential theft from threat actors on the remote host. The Restricted Admin Mode and Windows Defender Remote Credential Guard features are two options to help protect against this risk. The recommended state for this setting is: Enabled . Note: More detailed information on Windows Defender Remote Credential Guard and how it compares to Restricted Admin Mode can be found at this link: Protect Remote Desktop credentials with Windows Defender Remote Credential Guard (Windows 10) | Microsoft Docs Rationale: Restricted Admin Mode was designed to help protect administrator accounts by ensuring that reusable credentials are not stored in memory on remote devices that could potentially be compromised. Windows Defender Remote Credential Guard helps you protect your credentials over a Remote Desktop connection by redirecting Kerberos requests back to the device that is requesting the connection. Both features should be enabled and supported, as they reduce the chance of credential theft. Impact: The host will support the Restricted Admin Mode and Windows Defender Remote Credential Guard features. Default value: Disabled. ( Restricted Admin Mode and Windows Defender Remote Credential Guard are not supported. Users will always need to pass their credentials to the host.)"
-  },
-  {
-    "Category": "System - Device Guard",
-    "PolicyName": "18.9.5.1 Ensure 'Turn On Virtualization Based Security' is set to 'Enabled'",
-    "Scope": "Computer",
-    "CheckType": "Registry",
-    "PolicyPath": "Computer Configuration\\Policies\\Administrative Templates\\System\\Device Guard\\Turn On Virtualization Based Security",
-    "RegistryPath": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeviceGuard",
-    "SettingName": "EnableVirtualizationBasedSecurity",
-    "ValueType": "DWord",
-    "RecommendedValue": "1",
-    "Operator": "eq",
-    "Priority": "High",
-    "CisSection": "18.9.5.1",
-    "CisLevel": "L1",
-    "VDIDecision": "Keep",
-    "VDIRationale": "VBS requires the hypervisor to expose nested virtualisation to the guest. Confirm on one pool member before enforcing; without it the VM boots with VBS off and every VBS check reports Mismatch.",
-    "Notes": "CIS 18.9.5.1 (L1). Description: Description: This policy setting specifies whether Virtualization Based Security is enabled. Virtualization Based Security uses the Windows Hypervisor to provide support for security services. The recommended state for this setting is: Enabled . Note: Virtualization Based Security requires a 64-bit version of Windows with Secure Boot enabled, which in turn requires that Windows was installed with a UEFI BIOS configuration, not a Legacy BIOS configuration. In addition, if running Windows on a virtual machine, the hardware-assisted CPU virtualization feature (Intel VT-x or AMD-V) must be exposed by the host to the guest VM. More information on system requirements for this feature can be found at Windows Defender Credential Guard Requirements (Windows 10) | Microsoft Docs Note #2: Credential Guard and Device Guard are not currently supported when using Azure IaaS VMs. Note #3: If the Level 2 recommendation to configure Log on as a service (from Section 2.2) is implemented, the additional security principal WDAGUtilityAccount must also be granted that User Right Assignment in order for Virtualization Based Security (in Microsoft Defender Application Guard) with the Next Generation Windows Security (NGWS) profile to function. Rationale: Kerberos, NTLM, and Credential manager isolate secrets by using virtualization-based security. Previous versions of Windows stored secrets in the Local Security Authority (LSA). Prior to Windows 10, the LSA stored secrets used by the operating system in its process memory. With Windows Defender Credential Guard enabled, the LSA process in the operating system talks to a new component called the isolated LSA process that stores and protects those secrets. Data stored by the isolated LSA process is protected using virtualization-based security and is not accessible to the rest of the operating system. Impact: Note: This setting was moved from the Next Generation (NG) profile to the Level 1 (L1) profile for the Windows 11 Operating System only . NG profile settings were isolated from the L1 profile due to potential hardware compatibility issues. The Windows 11 Operating System is dependent on the same hardware as the NG settings, so hardware compatibility is no longer an issue. Warning: All drivers on the system must be compatible with this feature or the system may crash. Ensure that this policy setting is only deployed to computers which are known to be compatible. Default value: Disabled."
-  },
-  {
-    "Category": "System - Device Guard",
-    "PolicyName": "18.9.5.2 Ensure 'Turn On Virtualization Based Security: Select Platform Security Level' is set to 'Secure Boot' or higher",
-    "Scope": "Computer",
-    "CheckType": "Registry",
-    "PolicyPath": "Computer Configuration\\Policies\\Administrative Templates\\System\\Device Guard\\Turn On Virtualization Based Security: Select Platform Security Level",
-    "RegistryPath": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeviceGuard",
-    "SettingName": "RequirePlatformSecurityFeatures",
-    "ValueType": "DWord",
-    "RecommendedValue": "1,3",
-    "Operator": "oneof",
-    "Priority": "High",
-    "CisSection": "18.9.5.2",
-    "CisLevel": "L1",
-    "VDIDecision": "Keep",
-    "Notes": "CIS 18.9.5.2 (L1). Description: Description: This policy setting specifies whether Virtualization Based Security (VBS) is enabled. VBS uses the Windows Hypervisor to provide support for security services. The recommended state for this setting is: Secure Boot . Configuring this setting to Secure Boot and DMA Protection also conforms to the benchmark. Note: VBS requires a 64-bit version of Windows with Secure Boot enabled, which in turn requires that Windows was installed with a UEFI BIOS configuration, not a Legacy BIOS configuration. In addition, if running Windows on a virtual machine, the hardware-assisted CPU virtualization feature (Intel VT-x or AMD-V) must be exposed by the host to the guest VM. More information on system requirements for this feature can be found at Windows Defender Credential Guard Requirements (Windows 10) | Microsoft Docs Note #2: Credential Guard and Device Guard are not currently supported when using Azure IaaS VMs. Rationale: Secure Boot can help reduce the risk of bootloader attacks and in conjunction with DMA protections to help protect data from being scraped from memory. Impact: Choosing the Secure Boot option provides the system with as much protection as is supported by the computer’s hardware. A system with input/output memory management units (IOMMUs) will have Secure Boot with DMA protection. A system without IOMMUs will simply have Secure Boot enabled without DMA protection. Choosing the Secure Boot with DMA protection option requires the system to have IOMMUs in order to enable VBS. Without IOMMU hardware support, VBS will be disabled. Note: This setting was moved from the Next Generation (NG) profile to the Level 1 (L1) profile for the Windows 11 Operating System only . NG profile settings were isolated from the L1 profile due to potential hardware compatibility issues. The Windows 11 Operating System is dependent on the same hardware as the NG settings, so hardware compatibility is no longer an issue. Warning: All drivers on the system must be compatible with this feature or the system may crash. Ensure that this policy setting is only deployed to computers which are known to be compatible. Default value: Disabled."
-  },
-  {
-    "Category": "System - Device Guard",
-    "PolicyName": "18.9.5.3 Ensure 'Turn On Virtualization Based Security: Virtualization Based Protection of Code Integrity' is set to 'Enabled with UEFI lock'",
-    "Scope": "Computer",
-    "CheckType": "Registry",
-    "PolicyPath": "Computer Configuration\\Policies\\Administrative Templates\\System\\Device Guard\\Turn On Virtualization Based Security: Virtualization Based Protection of Code Integrity",
-    "RegistryPath": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeviceGuard",
-    "SettingName": "HypervisorEnforcedCodeIntegrity",
-    "ValueType": "DWord",
-    "RecommendedValue": "1",
-    "Operator": "eq",
-    "Priority": "High",
-    "CisSection": "18.9.5.3",
-    "CisLevel": "L1",
-    "VDIDecision": "Keep",
-    "VDIRationale": "Keep HVCI enabled, but note it only starts when the hypervisor exposes nested virtualisation and virtualisation-based security to the guest. Verify on one VM of the pool before enforcing pool-wide.",
-    "Notes": "CIS 18.9.5.3 (L1). Description: Description: This setting enables virtualization based protection of Kernel Mode Code Integrity. When this is enabled, kernel mode memory protections are enforced and the Code Integrity validation path is protected by the Virtualization Based Security feature. The recommended state for this setting is: Enabled with UEFI lock . Note: Virtualization Based Security requires a 64-bit version of Windows with Secure Boot enabled, which in turn requires that Windows was installed with a UEFI BIOS configuration, not a Legacy BIOS configuration. In addition, if running Windows on a virtual machine, the hardware-assisted CPU virtualization feature (Intel VT-x or AMD-V) must be exposed by the host to the guest VM. More information on system requirements for this feature can be found at Windows Defender Credential Guard Requirements (Windows 10) | Microsoft Docs Note #2: Credential Guard and Device Guard are not currently supported when using Azure IaaS VMs. Rationale: The Enabled with UEFI lock option ensures that Virtualization Based Protection of Code Integrity cannot be disabled remotely. Impact: Note: This setting was moved from the Next Generation (NG) profile to the Level 1 (L1) profile for the Windows 11 Operating System only . NG profile settings were isolated from the L1 profile due to potential hardware compatibility issues. The Windows 11 Operating System is dependent on the same hardware as the NG settings, so hardware compatibility is no longer an issue. Warning: All drivers on the system must be compatible with this feature or the system may crash. Ensure that this policy setting is only deployed to computers which are known to be compatible. Warning #2: Once this setting is turned on and active, Virtualization Based Security cannot be disabled solely via GPO or any other remote method. After removing the setting from GPO, the features must also be manually disabled locally at the machine using the steps provided at this link: Manage Windows Defender Credential Guard (Windows 10) | Microsoft Docs Default value: Disabled."
-  },
-  {
-    "Category": "System - Device Guard",
-    "PolicyName": "18.9.5.4 Ensure 'Turn On Virtualization Based Security: Require UEFI Memory Attributes Table' is set to 'True (checked)'",
-    "Scope": "Computer",
-    "CheckType": "Registry",
-    "PolicyPath": "Computer Configuration\\Policies\\Administrative Templates\\System\\Device Guard\\Turn On Virtualization Based Security: Require UEFI Memory Attributes Table",
-    "RegistryPath": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeviceGuard",
-    "SettingName": "HVCIMATRequired",
-    "ValueType": "DWord",
-    "RecommendedValue": "1",
-    "Operator": "eq",
-    "Priority": "Low",
-    "CisSection": "18.9.5.4",
-    "CisLevel": "L1",
-    "VDIDecision": "Keep",
-    "VDIRationale": "CIS requires the UEFI Memory Attributes Table. Some hypervisors do not expose a MAT-capable virtual UEFI; where they do not, HVCI will refuse to start with this set to 1. Validate on the platform - if MAT is unavailable set it to 0 so HVCI can still run.",
-    "Notes": "CIS 18.9.5.4 (L1). Description: Description: This option will only enable Virtualization Based Protection of Code Integrity on devices with UEFI firmware support for the Memory Attributes Table. Devices without the UEFI Memory Attributes Table may have firmware that is incompatible with Virtualization Based Protection of Code Integrity which in some cases can lead to crashes or data loss or incompatibility with certain plug-in cards. If not setting this option the targeted devices should be tested to ensure compatibility. The recommended state for this setting is: True (checked) . Note: Virtualization Based Security requires a 64-bit version of Windows with Secure Boot enabled, which in turn requires that Windows was installed with a UEFI BIOS configuration, not a Legacy BIOS configuration. In addition, if running Windows on a virtual machine, the hardware-assisted CPU virtualization feature (Intel VT-x or AMD-V) must be exposed by the host to the guest VM. More information on system requirements for this feature can be found at Windows Defender Credential Guard Requirements (Windows 10) | Microsoft Docs Note #2: Credential Guard and Device Guard are not currently supported when using Azure IaaS VMs. Rationale: This setting will help protect this control from being enabled on a system that is not compatible which could lead to a crash or data loss. Impact: Note: This setting was moved from the Next Generation (NG) profile to the Level 1 (L1) profile for the Windows 11 Operating System only . NG profile settings were isolated from the L1 profile due to potential hardware compatibility issues. The Windows 11 Operating System is dependent on the same hardware as the NG settings, so hardware compatibility is no longer an issue. Warning: All drivers on the system must be compatible with this feature or the system may crash. Ensure that this policy setting is only deployed to computers which are known to be compatible. Default value: Disabled."
-  },
-  {
-    "Category": "System - Device Guard",
-    "PolicyName": "18.9.5.5 Ensure 'Turn On Virtualization Based Security: Credential Guard Configuration' is set to 'Enabled with UEFI lock'",
-    "Scope": "Computer",
-    "CheckType": "Registry",
-    "PolicyPath": "Computer Configuration\\Policies\\Administrative Templates\\System\\Device Guard\\Turn On Virtualization Based Security: Credential Guard Configuration",
-    "RegistryPath": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeviceGuard",
-    "SettingName": "LsaCfgFlags",
-    "ValueType": "DWord",
-    "RecommendedValue": "1,2",
-    "Operator": "oneof",
-    "Priority": "High",
-    "CisSection": "18.9.5.5",
-    "CisLevel": "L1",
-    "VDIDecision": "Adjusted",
-    "VDIRationale": "CIS requires Credential Guard \"Enabled with UEFI lock\" (1). UEFI lock persists in the VM firmware and cannot be cleared without touching every VM, which conflicts with recompose/redeploy workflows; \"Enabled without lock\" (2) is accepted here. Credential Guard itself must stay on - it is the main defence against credential theft on a shared, multi-user desktop pool. Requires the hypervisor to expose nested virtualisation (Hyper-V nested virt, vSphere VBS, AVD/W365 Gen2).",
-    "Notes": "CIS 18.9.5.5 (L1). Description: Description: This setting lets users turn on Credential Guard with virtualization-based security to help protect credentials. The \"Enabled with UEFI lock\" option ensures that Credential Guard cannot be disabled remotely. In order to disable the feature, you must set the Group Policy to \"Disabled\" as well as remove the security functionality from each computer, with a physically present user, in order to clear configuration persisted in UEFI. The recommended state for this setting is: Enabled with UEFI lock . Note: Virtualization Based Security requires a 64-bit version of Windows with Secure Boot enabled, which in turn requires that Windows was installed with a UEFI BIOS configuration, not a Legacy BIOS configuration. In addition, if running Windows on a virtual machine, the hardware-assisted CPU virtualization feature (Intel VT-x or AMD-V) must be exposed by the host to the guest VM. More information on system requirements for this feature can be found at Windows Defender Credential Guard Requirements (Windows 10) | Microsoft Docs Note #2: Credential Guard and Device Guard are not currently supported when using Azure IaaS VMs. Rationale: The Enabled with UEFI lock option ensures that Credential Guard cannot be disabled remotely. Impact: Note: This setting was moved from the Next Generation (NG) profile to the Level 1 (L1) profile for the Windows 11 Operating System only . NG profile settings were isolated from the L1 profile due to potential hardware compatibility issues. The Windows 11 Operating System is dependent on the same hardware as the NG settings, so hardware compatibility is no longer an issue. Warning: All drivers on the system must be compatible with this feature or the system may crash. Ensure that this policy setting is only deployed to computers which are known to be compatible. Warning #2: Once this setting is turned on and active, Credential Guard cannot be disabled solely via GPO or any other remote method. After removing the setting from GPO, the features must also be manually disabled locally at the machine using the steps provided at this link: Manage Windows Defender Credential Guard (Windows 10) | Microsoft Docs Default value: Disabled."
-  },
-  {
-    "Category": "System - Device Guard",
-    "PolicyName": "18.9.5.7 Ensure 'Turn On Virtualization Based Security: Kernel-mode Hardware-enforced Stack Protection' is set to 'Enabled: Enabled in enforcement mode'",
-    "Scope": "Computer",
-    "CheckType": "Registry",
-    "PolicyPath": "Computer Configuration\\Policies\\Administrative Templates\\System\\Device Guard\\Turn On Virtualization Based Security: Kernel-mode Hardware-enforced Stack Protection",
-    "RegistryPath": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeviceGuard",
-    "SettingName": "ConfigureKernelShadowStacksLaunch",
-    "ValueType": "DWord",
-    "RecommendedValue": "1",
-    "Operator": "eq",
-    "Priority": "High",
-    "CisSection": "18.9.5.7",
-    "CisLevel": "L1",
-    "VDIDecision": "Keep",
-    "Notes": "CIS 18.9.5.7 (L1). Description: Description: This policy setting enables Hardware-enforced Stack Protection for kernel-mode code. Kernel-mode data stacks are hardened with hardware-based shadow stacks, which store intended return address targets to ensure that program control flow is not tampered. The recommended state for this setting is: Enabled: Enabled in enforcement mode . Note: Virtualization Based Security (VBS) requires a 64-bit version of Windows with Secure Boot enabled, which in turn requires that Windows was installed with a UEFI BIOS configuration, not a Legacy BIOS configuration. In addition, if running Windows on a virtual machine, the hardware-assisted CPU virtualization feature (Intel VT-x or AMD-V) must be exposed by the host to the guest VM. More information on system requirements for this feature can be found at Windows Defender Credential Guard Requirements (Windows 10) | Microsoft Docs Note #2: This specific security feature of VBS is only compatible with Windows 11 Release 22H2 (or newer). Note #3: Only Intel CPUs from Tiger Lake and beyond or AMD CPUs Zen3 and beyond (both were release in fall 2020) are compatible with this security feature. Note #4: Credential Guard and Device Guard are not currently supported when using Azure IaaS VMs. Rationale: This setting stores a copy of the apps shadow stack (intended code execution flow) in the hardware-based (CPU) security feature VBS. This can prevent malware from hijacking an apps code by exploiting memory bugs such as stack buffer overflows, dangling pointers, or uninitialized variables. This allows VBS to shut down any exploit attempts via the modification of the intended code execution flow. Impact: This setting is dependent upon Virtualization Based Protection of Code Integrity (aka HVCI) first being enabled, in addition to CPU hardware support for shadow stacks. If either HVCI is not enabled or hardware-based shadow stacks are not supported, this setting will have no effect. If this setting is successfully enabled, shadow stack violations will be fatal. Note: This setting was moved from the Next Generation (NG) profile to the Level 1 (L1) profile for the Windows 11 Operating System only . NG profile settings were isolated from the L1 profile due to potential hardware compatibility issues. The Windows 11 Operating System is dependent on the same hardware as the NG settings, so hardware compatibility is no longer an issue. Default value: Not Configured."
   },
   {
     "Category": "System - Device Installation",
@@ -4726,6 +4632,7 @@
     "CisSection": "18.9.53.1.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Keep the NTP client on, and make sure the HYPERVISOR is not also syncing the guest clock. XenServer/Citrix Hypervisor time sync fighting W32Time is a classic cause of Kerberos skew failures on domain-joined guests - pick the domain hierarchy and disable host time sync for these VMs.",
     "Notes": "CIS 18.9.53.1.1 (L1). Description: Description: This policy setting specifies whether the Windows NTP Client is enabled. Enabling the Windows NTP Client allows synchronization from a systems computer clock to NTP server(s). The recommended state for this setting is: Enabled . Note: If a third-party time provider is used in the environment, an exception to this recommendation will be needed. Rationale: A reliable and accurate account of time is important for a number of services and security requirements, including but not limited to distributed applications, authentication services, multi-user databases and logging services. The use of an NTP client (with secure operation) establishes functional accuracy and is a focal point when reviewing security relevant events. Impact: System time will be synced to the configured NTP server(s). Default value: Disabled. (The local computer clock does not synchronize time with NTP servers.)"
   },
   {
@@ -5375,6 +5282,7 @@
     "CisSection": "18.10.42.5.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Scoped to ONE preference (SpynetReporting) - it stops a local admin overriding the MAPS/cloud-protection setting from inside a session, and does NOT block the rest of the Set-MpPreference tuning that Defender-on-VDI needs (exclusions, RandomizeScheduleTaskTimes, DisableCpuThrottleOnIdleScans). Keep it: on a shared pooled desktop no single session should be able to turn cloud lookups off for the machine.",
     "Notes": "CIS 18.10.42.5.1 (L1). Description: Description: This policy setting configures a local override for the configuration to join Microsoft Active Protection Service (MAPS), which Microsoft renamed to Windows Defender Antivirus Cloud Protection Service and then Microsoft Defender Antivirus Cloud Protection Service . The recommended state for this setting is: Disabled . Rationale: The decision on whether or not to participate in Microsoft MAPS / Microsoft Defender Antivirus Cloud Protection Service for malicious software reporting should be made centrally in an enterprise managed environment, so that all computers within it behave consistently in that regard. Configuring this setting to Disabled ensures that the decision remains centrally managed. Impact: None - this is the default behavior. Default value: Disabled. (Group Policy will take priority over the local preference setting.)"
   },
   {
@@ -5392,6 +5300,7 @@
     "CisSection": "18.10.42.5.2",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Cloud protection matters MORE on a pooled desktop than on physical hardware: the VM boots with whatever signature set was current when the gold image was sealed and depends on cloud lookups until the delta update lands. Confirm the pool can actually reach the Defender cloud endpoints (directly or via the WinHTTP/Defender proxy) - without a path out, Advanced MAPS degrades silently and this check still reports Configured. Unrelated but easy to miss on a clone: Defender for Endpoint needs the non-persistent VDI onboarding package and a cleared device identity before sealing, or every pool member reports as the same device.",
     "Notes": "CIS 18.10.42.5.2 (L1). Description: Description: This policy setting configures Microsoft Active Protection Service (MAPS). Microsoft MAPS is designed to help Microsoft continually update and improve definitions of malware, spyware and other potentially unwanted software and to help Microsoft improve Windows Defender and related technologies. The recommended state for this setting is: Enabled: Advanced . Note: In Windows 10 and above, Basic membership is no longer available, so setting the value to 1 Basic, or 2 Advanced, enrolls the device into Advanced membership. For more information, please visit: Turn on cloud protection in Microsoft Defender Antivirus - Microsoft Defender for Endpoint | Microsoft Learn . Note #2: This setting originally named Windows Defender Antivirus Cloud Protection Service and then Microsoft Defender Antivirus Cloud Protection Service before it was renamed to Microsoft MAPS . Rationale: Cloud protection works with Microsoft Defender Antivirus to provide intelligent, real-time threat detection. Microsoft strongly recommends enabling cloud protection, as several advanced security features in Microsoft Defender for Endpoint rely on it to function properly. To fully take advantage of these protections, including several ASR rules, this setting must be enabled to allow for MAPS reporting. Impact: MAPS will send detailed information about malware and potentially unwanted software, including the full path to the software, and detailed information about how the software has affected the device. Default value: Disabled. (Microsoft MAPS / Microsoft Defender Antivirus Cloud Protection Service will not be joined.)"
   },
   {
@@ -5784,6 +5693,7 @@
     "CisSection": "18.10.42.13.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Direct tension with Defender-on-VDI guidance. Enabled means quick scans read the excluded paths anyway - which is exactly the FSLogix VHDX and provisioning-disk I/O the exclusions exist to avoid, now happening on every VM in the pool. CIS is right that exclusions are a hiding place; the VDI counter-argument is storage collapse. If you keep it Enabled, scan randomisation is mandatory, not optional. Set it to 0 in ADJUST if your storage cannot absorb it - and then compensate with EDR coverage of the excluded paths.",
     "Notes": "CIS 18.10.42.13.1 (L1). Description: Description: This policy setting manages whether or not Microsoft Defender Antivirus scans excluded files and directories when running a Quick Scan. The recommended state for this setting is: Enabled: 1 . Rationale: The Real-time Protection feature excludes some files and directories for contextual reasons. This setting ensures that these are scanned during a Quick Scan. Impact: A Quick Scan could take longer when including the contextually excluded files and directories. Default value: Disabled. (Contextual exclusions are not scanned during Quick Scans.)"
   },
   {
@@ -6165,6 +6075,7 @@
     "CisSection": "18.10.73.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Recall needs a Copilot+ NPU, so this is a no-op on a virtual desktop today. Keep it - it costs nothing and forecloses the feature if the image ever moves to capable hardware.",
     "Notes": "CIS 18.10.73.1 (L1). Description: Description: This policy setting controls whether the Recall optional component is available for end users to enable on the system. Microsoft Recall periodically captures screenshots of the system display, creating a searchable timeline of activity including apps, documents, and websites. The recommended state for this setting is: Disabled . Rationale: Saving snapshots of all user activity could result in sensitive information such as passwords or banking details being stored insecurely and making it easily accessible. Note: Recall isn't available on managed devices by default and individual users can't enable Recall on their own. Impact: None - this is the default behavior. If Recall was previously enabled, snapshots that were previously saved on the system will be deleted when this policy is disabled. Default value: Disabled. (Recall component is in a disabled state.)"
   },
   {
@@ -6369,6 +6280,7 @@
     "CisSection": "18.10.83.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "EnableMPR=0 stops Winlogon handing the password to network providers. Third-party credential providers and legacy SSO shims that hook MPR notifications will stop receiving it - if you run one alongside the Citrix credential provider, test logon before enforcing.",
     "Notes": "CIS 18.10.83.1 (L1). Description: Description: This policy setting controls whether winlogon includes a user's password in the content of Multiple Provider Router (MPR) notifications. MPR handles communication between the Windows operating system and the installed network providers. MPR checks the registry to determine which providers are installed on the system and the order they are cycled through. The recommended state for this setting is: Disabled . Rationale: MPR is a legacy utility that provides notifications to registered credential managers or network providers when there is a logon event, or a password change event. Although MPR can be used by legitimate applications, the user's password field of these notifications should be empty to prevent abuse by threat actors. Impact: None - this is the default behavior. Note: If Citrix Workspace App is used in the environment, an exception to this recommendation is needed. For further information, please visit: Cumulative Update 2 (CU2) | Citrix Workspace™ app 2402 LTSR for Windows . Default value: Disabled. (Winlogon sends MPR notifications with empty password fields of the user's authentication info.)"
   },
   {
@@ -6575,6 +6487,7 @@
     "CisSection": "18.11.1",
     "CisLevel": "L1",
     "VDIDecision": "Keep",
+    "VDIRationale": "Disabling WPAD breaks PAC-file discovery. If the pool reaches the internet through a proxy discovered by WPAD, set the proxy explicitly (WinHTTP/Group Policy) in the gold image first, or the desktops lose outbound access - including the Defender cloud lookups 18.10.42.5.2 depends on.",
     "Notes": "CIS 18.11.1 (L1). Description: Description: This policy setting determines whether Web Proxy Auto-Discovery protocol (WPAD) is disabled on the system. WPAD is used to discover Proxy Auto-Config (PAC) files from the local network. The recommended state for this setting is: Enabled: Checked . Note: When this recommendation is set as prescribed, applications can still resolve the name WPAD by calling Domain Name System (DNS) directly. Rationale: WPAD could expose the system to Man-In-The-Middle (MITM) attacks. If an organization depends on HTTP proxy configuration, it is recommended that other client configuration mechanisms be used instead, such as Group Policy. Impact: After WPAD is disabled, all proxies must be manually configured. The registry key created by this recommendation stops WPAD detection for all proxy detection calls made through the Windows HTTP Services (WinHTTP) application programming interface (API). Default value: Enabled."
   },
   {

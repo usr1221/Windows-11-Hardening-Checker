@@ -28,6 +28,7 @@ PDF_JSON = os.path.join(WORK, 'cis_pdf_reg.json')       # section -> registry ma
 POLICIES_CIS = os.path.join(REPO, 'Policies-CIS.json')
 POLICIES_VDI = os.path.join(REPO, 'Policies-VDI.json')
 DECISIONS_CSV = os.path.join(REPO, 'Policies-VDI-Decisions.csv')
+POLICIES_EDGE = os.path.join(REPO, 'Policies-Edge.json')
 POLICIES_ASD = os.path.join(REPO, 'Policies.json')      # cross-check source
 
 

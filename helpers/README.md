@@ -18,6 +18,21 @@ python3 helpers/build_policies_vdi.py   # -> Policies-VDI.json + decisions CSV
 Requirements: Python 3.9+ and `pypdf` (step 2 only). Intermediates are cached in
 `.cis-build/`; the extracted PDF text is reused unless the PDF is newer.
 
+The Edge baseline is independent of the CIS pipeline and runs on its own:
+
+```bash
+python3 helpers/build_policies_edge.py   # -> Policies-Edge.json
+```
+
+It reads the Policy Analyzer `*.PolicyRules` export (the authority for the
+registry key, value name, type and data — it is a mechanical dump of the
+baseline's `registry.pol`) and the converted `*.xlsx` audit report, which is
+used only to cross-check the setting list and seed the rationale. Friendly
+policy names, Administrative Templates paths, priorities and the expanded notes
+are curated in `META` at the top of the script, because neither input carries
+them. Adding a setting to the baseline without adding it to `META` produces a
+warning rather than a silently missing check.
+
 Each script finds its input in the repository root by glob and stops if it finds
 more than one candidate; pass `--report` / `--pdf` to be explicit.
 
@@ -49,7 +64,15 @@ means CIS changed the recommendation — read it, don't silence it.
 
 ## Editing the VDI decisions
 
-All VDI judgements live in four tables at the top of `build_policies_vdi.py`:
+`NESTED_VIRT` at the top of `build_policies_vdi.py` records whether the
+hypervisor exposes nested virtualisation to the guest (it does not on Citrix
+Hypervisor/XenServer; it does on vSphere 6.7+, Hyper-V and AVD/W365 Gen2). It is
+`False` by default, which excludes the whole 18.9.5 VBS group — those checks
+read a registry value that Group Policy writes whether or not VBS actually
+starts, so on a platform that cannot run VBS they report Configured for a
+desktop with no protection.
+
+All other VDI judgements live in four tables:
 
 - `EXCLUDE` — not applicable to a non-persistent desktop (dropped from the JSON
   so it cannot skew the compliance score, kept in the CSV with the reason)

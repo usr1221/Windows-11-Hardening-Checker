@@ -28,9 +28,10 @@ modify configuration.)
 | `Invoke-Win11HardeningAudit.ps1` | The audit engine + self-contained `.xlsx` writer |
 | `Policies.json` | Default policy set — ASD/ACSC "Hardening Microsoft Windows 11 workstations" |
 | `Policies-CIS.json` | **CIS Microsoft Windows 11 Enterprise Benchmark v5.0.1, Level 1** — 409 checks covering all 393 Level 1 recommendations of the benchmark |
-| `Policies-VDI.json` | The CIS set reviewed for **non-persistent VDI** — 385 checks (24 dropped as not applicable, 5 re-valued, 19 tolerant of a removed service) |
+| `Policies-VDI.json` | The CIS set reviewed for **non-persistent VDI** — 379 checks (30 dropped as not applicable, 4 re-valued, 19 tolerant of a removed service) |
 | `Policies-VDI-Decisions.csv` | The full audit trail: every CIS check with its VDI decision (Keep / Adjusted / Tolerant / Excluded), both values, both operators and the rationale |
-| `helpers/` | Generators that rebuild the CIS and VDI sets from the CIS-CAT report + benchmark PDF — see `helpers/README.md` |
+| `Policies-Edge.json` | **Microsoft Edge v139 security baseline** (Microsoft Security Compliance Toolkit) — 19 checks, browser only |
+| `helpers/` | Generators that rebuild the CIS, VDI and Edge sets from their source documents — see `helpers/README.md` |
 | `README.md` | This file |
 
 ### The CIS and VDI policy sets
@@ -43,21 +44,67 @@ cross-checked against the OVAL criteria in the report. Every entry carries
 impact and default value in `Notes`.
 
 `Policies-VDI.json` is derived from it, with each setting reviewed against a
-pooled, recomposed desktop. The five re-valued checks are:
+pooled, recomposed desktop. The four re-valued checks are:
 
 | CIS | Setting | CIS | VDI | Why |
 |-----|---------|-----|-----|-----|
 | 2.3.6.4 | Disable machine account password changes | `0` | `1` | A password change made after cloning is discarded at recompose while AD keeps it — the secure channel breaks |
 | 18.10.94.2.1 | Configure Automatic Updates | `0` (enabled) | `1` (disabled) | The desktop discards what it installs; patch the gold image instead of having the whole pool download the same updates |
-| 18.9.5.5 | Credential Guard | `1` (UEFI lock) | `1` or `2` | UEFI lock persists in VM firmware and blocks recompose/redeploy workflows; Credential Guard itself stays required |
 | 18.10.17.1 | Delivery Optimization download mode | not `3` | `0` or `99` | Peering between identical short-lived VMs on one host is pointless I/O |
 | 18.10.42.13.4 | Catch-up quick scan | `= 7` | `>= 7` | Meaningless on a desktop rebuilt daily; scan randomisation and platform exclusions are what matter |
 
-Run them with `-PoliciesPath`:
+### Virtualization-based security (18.9.5) and the hypervisor
+
+The VBS group — VBS itself, HVCI, Credential Guard, the platform security
+level, the UEFI MAT requirement and kernel-mode stack protection — needs the
+**hypervisor** to expose nested virtualisation to the guest. That is a property
+of the platform, not of the broker: vSphere 6.7+, Hyper-V and AVD/Windows 365
+Gen2 can do it, Citrix Hypervisor/XenServer cannot.
+
+These checks read the registry, and Group Policy writes the registry whether or
+not VBS ever starts — so on a platform that cannot run VBS they report
+**Configured on a desktop with no VBS protection at all**. The default set
+therefore excludes the whole group rather than keeping it as a false pass.
+Flip `NESTED_VIRT = True` at the top of `helpers/build_policies_vdi.py` and
+rebuild if your platform supports it; 18.9.5.5 then returns as an *Adjusted*
+check (Credential Guard `1` or `2`, because UEFI lock persists in VM firmware
+and blocks recompose workflows). 18.9.5.6 (Secure Launch) stays excluded either
+way — it needs physical DRTM, which no hypervisor passes through.
+
+Confirm the real state on a pool member rather than trusting the registry:
+
+```powershell
+(Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard `
+  -ClassName Win32_DeviceGuard).SecurityServicesRunning   # 1 = Credential Guard, 2 = HVCI
+```
+
+### The Edge baseline
+
+`Policies-Edge.json` is a separate, browser-only set built from the Microsoft
+Edge v139 security baseline in the Security Compliance Toolkit. It is not part
+of the CIS sets and does not overlap with them — run it alongside whichever OS
+set you use, not instead of it.
+
+All 19 checks are computer-scope registry values under
+`HKLM\Software\Policies\Microsoft\Edge`. Two rollout notes:
+
+- **`ExtensionInstallBlocklist\1 = *`** is a default-deny on browser
+  extensions. Inventory and allowlist what is in use before enforcing it.
+- **`SitePerProcess`** costs memory (one renderer process per site). It is the
+  one baseline setting with a real footprint on VDI session density — budget
+  for it rather than dropping it.
+
+The baseline's `**delvals.` entry is deliberately **not** a check: it is a
+`registry.pol` directive telling the Group Policy client to clear the key
+before writing, and it never exists in the registry, so auditing it would
+report Not Configured on a fully compliant machine forever.
+
+Run the sets with `-PoliciesPath`:
 
 ```powershell
 .\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-CIS.json
 .\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-VDI.json
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-Edge.json
 ```
 
 Both sets are generated, not hand-maintained. To rebuild them after a benchmark
