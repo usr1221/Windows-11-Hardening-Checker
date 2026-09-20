@@ -80,12 +80,25 @@ PRINCIPAL_SID = {
     'window manager\\window manager group': 'S-1-5-90-0',
     'nt service\\wdiservicehost': 'S-1-5-80-3139157870-2983391045-3678747466-658725712-1809340420',
     'nt virtual machine\\virtual machines': 'S-1-5-83-0',
+    # Restricted service identity of the split print spooler (24H2+). The
+    # sub-authorities are the SHA-1 hash of the uppercased service name, so the
+    # SID is the same on every machine; LookupAccountName returns the S-1-5-99
+    # (restricted services) form, sc.exe showsid prints the S-1-5-80 one.
+    'restricted services\\printspoolerservice': 'S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229',
 }
 
 # Principals CIS allows conditionally, added on top of the title-derived set.
 PRIV_SIDS_EXTRA = {
     '2.2.13': (['S-1-5-83-0'],
                'NT VIRTUAL MACHINE\\Virtual Machines (S-1-5-83-0) is additionally allowed when Hyper-V is installed.'),
+    '2.2.22': (['S-1-5-80-216390572-1995538116-3857911515-2404958512-2623887229'],
+               'RESTRICTED SERVICES\\PrintSpoolerService is matched by its name-derived service SID '
+               '(S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229, and the equivalent '
+               'S-1-5-80 form), so the check rejects any holder outside the list CIS allows.'),
+    '2.2.23': (['S-1-5-80-216390572-1995538116-3857911515-2404958512-2623887229'],
+               'RESTRICTED SERVICES\\PrintSpoolerService is matched by its name-derived service SID '
+               '(S-1-5-99-216390572-1995538116-3857911515-2404958512-2623887229, and the equivalent '
+               'S-1-5-80 form), so the check rejects any holder outside the list CIS allows.'),
 }
 
 def principals_from_title(title):
@@ -222,14 +235,20 @@ def section_of(body, name, nxt):
     m = re.search(re.escape(name) + r'\s*:\s*(.*?)(?=' + nxt + r')', body, re.S)
     return re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
 
+def _clean_part(text, label):
+    """Normalise whitespace and drop a label the report already carries, so the
+    note reads 'Description: ...' and not 'Description: Description: ...'."""
+    t = re.sub(r'\s+', ' ', text).strip()
+    return re.sub(r'^%s\s*:\s*' % label, '', t, flags=re.I)
+
 def build_notes(rule, level):
     body = PDF.get(rule['section'], {}).get('body', '')
     default = section_of(body, 'Default Value', r'References\s*:|CIS Controls\s*:|$')
     parts = ['CIS %s (%s).' % (rule['section'], level)]
     if rule['description']:
-        parts.append('Description: ' + re.sub(r'\s+', ' ', rule['description']).strip())
+        parts.append('Description: ' + _clean_part(rule['description'], 'Description'))
     if rule['rationale']:
-        parts.append('Rationale: ' + re.sub(r'\s+', ' ', rule['rationale']).strip())
+        parts.append('Rationale: ' + _clean_part(rule['rationale'], 'Rationale'))
     imp = re.search(r'Impact:\s*(.*)$', re.sub(r'\s+', ' ', rule['remediation']), re.S)
     if imp:
         parts.append('Impact: ' + imp.group(1).strip())
@@ -358,11 +377,31 @@ for rule in RULES:
     if sec.startswith('17.'):
         title = re.match(r"Ensure '(.+?)'", rule['title'])
         key = title.group(1).lower() if title else ''
+        # The benchmark's own Audit section quotes the subcategory GUID
+        # (auditpol /get /subcategory:"{...}"), so the PDF is the authority.
+        # Policies.json is only the fallback, and a disagreement is reported:
+        # its list had two subcategories shifted by one (Detailed File Share
+        # carried the Network Policy Server GUID, Removable Storage carried
+        # Detailed File Share's), which silently audited the wrong subcategory.
+        pdf_guid = re.search(r'subcategory\s*:\s*"?\{([0-9a-fA-F-]{36})\}',
+                             re.sub(r'\s+', ' ', pdf.get('body', '')))
+        guid = disp = None
+        if pdf_guid:
+            guid, disp = pdf_guid.group(1).lower(), rule['title']
         if sec in AUDIT_EXTRA:
-            guid, disp = AUDIT_EXTRA[sec]
+            xguid, xdisp = AUDIT_EXTRA[sec]
+            if guid and guid != xguid:
+                warnings.append('%s: AUDIT_EXTRA GUID %s disagrees with the benchmark (%s)' % (sec, xguid, guid))
+            elif not guid:
+                guid, disp = xguid, xdisp
         elif key in legacy_audit:
-            guid, disp = legacy_audit[key]['SettingName'], legacy_audit[key]['PolicyName']
-        else:
+            lguid = legacy_audit[key]['SettingName']
+            if guid and guid != lguid:
+                warnings.append('%s: Policies.json GUID %s disagrees with the benchmark (%s) - using the benchmark'
+                                % (sec, lguid, guid))
+            elif not guid:
+                guid, disp = lguid, legacy_audit[key]['PolicyName']
+        if not guid:
             warnings.append('%s: no auditpol GUID' % sec); continue
         t = rule['title']
         if 'Success and Failure' in t:
