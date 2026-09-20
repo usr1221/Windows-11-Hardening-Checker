@@ -144,7 +144,8 @@ By default the report is written next to the script as
 
 ## The report
 
-**Sheet 1 – Summary:** host/OS info, totals, a compliance score, and a
+**Sheet 1 – Summary:** the baseline and policy file the run used, host/OS info,
+totals, a compliance score, and a
 non-compliant breakdown by priority.
 
 **Sheet 2 – Audit Results:** one row per check, with a frozen header row and
@@ -158,8 +159,8 @@ auto-filters, containing the requested columns:
 | **Policy Path** | Where the setting lives in the Group Policy editor |
 | **Registry Path** | The backing registry key |
 | **Setting name** | The registry value name |
-| **Current Value** | What is configured on this machine (`<not set>` if absent) |
-| **Recommended Value** | The ASD-recommended value |
+| **Current Value** | What is configured on this machine (`<not set>` if absent, `<empty>` if the value exists but is blank) |
+| **Recommended Value** | The recommended value, rendered with its comparison — `1 to 365 (inclusive)`, `one of: 256, 287`, `16384 or more`, `any non-empty value`, `the value must not exist` — so the cell is unambiguous on its own |
 | **Status** | `Configured` / `Mismatch` / `Not Configured` |
 | **Priority** | `High` / `Medium` / `Low` |
 | Notes | Short explanation (added for usability) |
@@ -176,6 +177,11 @@ auto-filters, containing the requested columns:
 > A *Not Configured* result means the hardening setting has not been explicitly
 > applied. In a few cases the Windows default is already secure, so treat
 > *Not Configured* as "needs review", not automatically "insecure".
+
+*Not Configured* (absent) and `<empty>` (present but blank) are different
+results. Group Policy writes an emptied `REG_SZ` as a single NUL character, so
+a cleared logon banner is a value that exists and holds nothing — it is
+reported as a **Mismatch** with `<empty>`, not as compliant.
 
 ### Source column (GPO vs MDM/Intune)
 

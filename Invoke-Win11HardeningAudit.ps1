@@ -90,7 +90,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-Write-Host "Windows 11 Hardening Audit (ASD/ACSC)" -ForegroundColor Cyan
+Write-Host "Windows 11 Hardening Audit" -ForegroundColor Cyan
 Write-Host ("  Host        : {0}" -f $env:COMPUTERNAME)
 Write-Host ("  User        : {0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
 Write-Host ("  Elevated    : {0}" -f $isAdmin)
@@ -101,6 +101,19 @@ if (-not $isAdmin) {
 
 $policies = Get-Content -Path $PoliciesPath -Raw | ConvertFrom-Json
 Write-Host ("  Loaded {0} policy checks." -f $policies.Count) -ForegroundColor Green
+
+# Name the baseline from the set that was actually loaded, so a CIS run is not
+# labelled ASD/ACSC on the report it produces.
+$policyFileName = [System.IO.Path]::GetFileNameWithoutExtension($PoliciesPath)
+$isCisSet = [bool](@($policies | Where-Object { $_.CisSection }).Count)
+$isVdiSet = [bool](@($policies | Where-Object { $_.VDIDecision }).Count)
+$baselineName =
+    if     ($isVdiSet) { 'CIS Microsoft Windows 11 Enterprise Benchmark, Level 1 - reviewed for non-persistent VDI' }
+    elseif ($isCisSet) { 'CIS Microsoft Windows 11 Enterprise Benchmark, Level 1' }
+    elseif ($policyFileName -eq 'Policies') { 'ASD/ACSC Hardening Microsoft Windows 11 workstations' }
+    elseif ($policyFileName -match 'Edge')  { 'Microsoft Edge security baseline' }
+    else   { $policyFileName }
+Write-Host ("  Baseline    : {0}" -f $baselineName) -ForegroundColor Green
 
 # --------------------------------------------------------------------------
 #  Helpers
@@ -136,8 +149,13 @@ function Get-RegistryValue {
 function ConvertTo-DisplayString {
     param($Value)
     if ($null -eq $Value) { return '<not set>' }
-    if ($Value -is [System.Array]) { return ($Value -join '; ') }
-    return [string]$Value
+    if ($Value -is [System.Array]) { $s = ($Value -join '; ') } else { $s = [string]$Value }
+    # Group Policy writes an "empty" REG_SZ as a single NUL character, and
+    # REG_BINARY-ish data can carry other control characters. Strip them: they
+    # are illegal in the .xlsx XML and in a CSV, and an unstripped NUL made an
+    # empty value look non-empty, so a blank logon banner passed the 'match .+'
+    # check as Configured.
+    return ($s -replace '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
 }
 
 # --------------------------------------------------------------------------
@@ -439,6 +457,36 @@ function Get-ComplianceStatus {
     }
 }
 
+function Format-RecommendedValue {
+    # The comparison is carried by Operator, so the bare RecommendedValue is
+    # ambiguous in the report: "1,365" is a range, "256,287" is a choice of two,
+    # and a reader (or a locale that uses "," as the decimal separator) cannot
+    # tell. Render the operator into the text the report shows.
+    param([string]$Value, [string]$Operator, [bool]$AbsentIsCompliant)
+
+    $v = [string]$Value
+    $text = switch ($Operator) {
+        'ge'       { "$v or more" }
+        'le'       { "$v or less" }
+        'ne'       { "any value except $v" }
+        'between'  {
+            $parts = $v -split ','
+            if ($parts.Count -eq 2) { "{0} to {1} (inclusive)" -f $parts[0].Trim(), $parts[1].Trim() } else { $v }
+        }
+        'oneof'    { "one of: " + (($v -split ',' | ForEach-Object { $_.Trim() }) -join ', ') }
+        'contains' { "must include: " + (($v -split ',' | ForEach-Object { $_.Trim() }) -join ', ') }
+        'match'    { if ($v -eq '.+') { 'any non-empty value' } else { "matching $v" } }
+        'exists'   { 'any non-empty value' }
+        'notexist' { 'the value must not exist' }
+        'subsetof' { "$v (and no other account)" }
+        'setequals'{ $v }
+        default    { $v }
+    }
+    if ([string]::IsNullOrWhiteSpace($text)) { $text = '<empty>' }
+    if ($AbsentIsCompliant -and $Operator -ne 'notexist') { $text = "$text (or not set)" }
+    return $text
+}
+
 function Convert-ToSid {
     # Translate an account name to its SID string; SIDs pass through unchanged.
     param([string]$Token)
@@ -502,6 +550,11 @@ if ($needsAudit -and $isAdmin) {
             if ($line -match '\{([0-9a-fA-F-]{36})\}') {
                 $g = $Matches[1].ToLower()
                 $fields = $line -split ','
+                # Column 2 is the Policy Target: "System" for the machine policy
+                # and a user SID for a per-user audit policy. Per-user rows carry
+                # the same subcategory GUIDs, so without this they would overwrite
+                # the system setting and the check would report the wrong state.
+                if ($fields.Count -gt 1 -and $fields[1].Trim(' ','"') -match '^S-1-') { continue }
                 $v = 0
                 if ([int]::TryParse($fields[$fields.Count - 1].Trim(), [ref]$v)) { $auditMap[$g] = $v }
             }
@@ -582,6 +635,9 @@ $results = foreach ($p in $policies) {
                        -Recommended ([string]$p.RecommendedValue) -Operator $p.Operator `
                        -AbsentIsCompliant ([bool]$p.AbsentIsCompliant)
         if (-not $reg.Exists -and $p.AbsentIsCompliant) { $current = '<not set - acceptable>' }
+        # Present but blank is not the same as absent - say so, otherwise the
+        # row shows an empty cell next to a red Mismatch and looks like a bug.
+        elseif ($reg.Exists -and [string]::IsNullOrWhiteSpace($current)) { $current = '<empty>' }
     }
     elseif ($checkType -eq 'SecEditAccess') {
         # Password / lockout / account policy from [System Access] of the export
@@ -717,7 +773,8 @@ $results = foreach ($p in $policies) {
         'Registry Path'   = $p.RegistryPath
         'Setting name'    = $p.SettingName
         'Current Value'   = $current
-        'Recommended Value' = [string]$p.RecommendedValue
+        'Recommended Value' = (Format-RecommendedValue -Value ([string]$p.RecommendedValue) `
+                                  -Operator ([string]$p.Operator) -AbsentIsCompliant ([bool]$p.AbsentIsCompliant))
         Status            = $status
         Priority          = $p.Priority
         Notes             = $notesOut
@@ -825,8 +882,19 @@ function Get-ColumnLetter {
 }
 
 function New-Cell {
-    param([int]$Col, [int]$Row, $Value, [int]$Style = 0)
+    param([int]$Col, [int]$Row, $Value, [int]$Style = 0, [bool]$Numeric = $false)
     $ref = (Get-ColumnLetter $Col) + $Row
+    # Counts are written as real numbers so Excel does not flag them as
+    # "number stored as text"; everything else stays text, which keeps values
+    # such as "1 to 365 (inclusive)" or a leading-zero string intact.
+    if ($Numeric) {
+        $n = 0.0
+        if ([double]::TryParse([string]$Value, [System.Globalization.NumberStyles]::Float,
+                               [System.Globalization.CultureInfo]::InvariantCulture, [ref]$n)) {
+            $inv = $n.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+            return "<c r=`"$ref`" s=`"$Style`"><v>$inv</v></c>"
+        }
+    }
     $txt = ConvertTo-XmlText ([string]$Value)
     "<c r=`"$ref`" s=`"$Style`" t=`"inlineStr`"><is><t xml:space=`"preserve`">$txt</t></is></c>"
 }
@@ -866,7 +934,8 @@ function Build-SheetXml {
         foreach ($cell in $row) {
             $cIdx++
             $style = 0; if ($null -ne $cell.S) { $style = [int]$cell.S }
-            [void]$sb.Append((New-Cell -Col $cIdx -Row $r -Value $cell.V -Style $style))
+            $num = $false; if ($null -ne $cell.N) { $num = [bool]$cell.N }
+            [void]$sb.Append((New-Cell -Col $cIdx -Row $r -Value $cell.V -Style $style -Numeric $num))
         }
         [void]$sb.Append('</row>')
     }
@@ -1040,7 +1109,9 @@ $auditSheet = Build-SheetXml -Rows $dataRows.ToArray() -Cols $cols -Freeze $true
 
 # ---- Build the "Summary" sheet ----
 $sumRows = New-Object System.Collections.ArrayList
-[void]$sumRows.Add(@( @{ V='Windows 11 Hardening Audit (ASD/ACSC) - Summary'; S=6 } ))
+[void]$sumRows.Add(@( @{ V='Windows 11 Hardening Audit - Summary'; S=6 } ))
+[void]$sumRows.Add(@( @{ V='Baseline';        S=6 }, @{ V=$baselineName; S=0 } ))
+[void]$sumRows.Add(@( @{ V='Policy set';      S=6 }, @{ V=(Split-Path -Leaf $PoliciesPath); S=0 } ))
 [void]$sumRows.Add(@( @{ V='Generated';       S=6 }, @{ V=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); S=0 } ))
 [void]$sumRows.Add(@( @{ V='Hostname';        S=6 }, @{ V=$env:COMPUTERNAME; S=0 } ))
 [void]$sumRows.Add(@( @{ V='User';            S=6 }, @{ V=("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME); S=0 } ))
@@ -1052,22 +1123,22 @@ if (-not $SkipIntune) {
     if ($mdmEnrolled -and $mdmInfo.UPN) {
         [void]$sumRows.Add(@( @{ V='MDM UPN';         S=6 }, @{ V=$mdmInfo.UPN; S=0 } ))
     }
-    [void]$sumRows.Add(@( @{ V='MDM CSP settings'; S=6 }, @{ V=$intuneRaw.Count; S=0 } ))
+    [void]$sumRows.Add(@( @{ V='MDM CSP settings'; S=6 }, @{ V=$intuneRaw.Count; S=0; N=$true } ))
 }
 [void]$sumRows.Add(@( @{ V=''; S=0 } ))
 [void]$sumRows.Add(@( @{ V='Metric'; S=7 }, @{ V='Count'; S=7 } ))
-[void]$sumRows.Add(@( @{ V='Total rows';      S=6 }, @{ V=$total;      S=5 } ))
-[void]$sumRows.Add(@( @{ V='Configured';      S=6 }, @{ V=$configured; S=2 } ))
-[void]$sumRows.Add(@( @{ V='Mismatch';        S=6 }, @{ V=$mismatch;   S=3 } ))
-[void]$sumRows.Add(@( @{ V='Not Configured';  S=6 }, @{ V=$notConfig;  S=4 } ))
-[void]$sumRows.Add(@( @{ V='Intune-Managed';  S=6 }, @{ V=$intuneOnly; S=8 } ))
-[void]$sumRows.Add(@( @{ V='Unknown (needs admin)'; S=6 }, @{ V=$unknown; S=8 } ))
+[void]$sumRows.Add(@( @{ V='Total rows';      S=6 }, @{ V=$total;      S=5; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Configured';      S=6 }, @{ V=$configured; S=2; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Mismatch';        S=6 }, @{ V=$mismatch;   S=3; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Not Configured';  S=6 }, @{ V=$notConfig;  S=4; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Intune-Managed';  S=6 }, @{ V=$intuneOnly; S=8; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Unknown (needs admin)'; S=6 }, @{ V=$unknown; S=8; N=$true } ))
 [void]$sumRows.Add(@( @{ V='Compliance score';S=6 }, @{ V=("{0}% (of {1} assessed)" -f $score, $assessed); S=5 } ))
 [void]$sumRows.Add(@( @{ V=''; S=0 } ))
 [void]$sumRows.Add(@( @{ V='Non-compliant by priority'; S=7 }, @{ V='Count'; S=7 } ))
-[void]$sumRows.Add(@( @{ V='High';   S=6 }, @{ V=$ncHigh;   S=5 } ))
-[void]$sumRows.Add(@( @{ V='Medium'; S=6 }, @{ V=$ncMedium; S=5 } ))
-[void]$sumRows.Add(@( @{ V='Low';    S=6 }, @{ V=$ncLow;    S=5 } ))
+[void]$sumRows.Add(@( @{ V='High';   S=6 }, @{ V=$ncHigh;   S=5; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Medium'; S=6 }, @{ V=$ncMedium; S=5; N=$true } ))
+[void]$sumRows.Add(@( @{ V='Low';    S=6 }, @{ V=$ncLow;    S=5; N=$true } ))
 $sumCols = @( @{ Min=1; Max=1; Width=28 }, @{ Min=2; Max=2; Width=40 } )
 $summarySheet = Build-SheetXml -Rows $sumRows.ToArray() -Cols $sumCols
 

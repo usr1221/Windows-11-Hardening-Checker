@@ -46,7 +46,7 @@ more than one candidate; pass `--report` / `--pdf` to be explicit.
 | `Notes` | the report's full description + rationale + impact, plus the PDF's default value |
 | `Category` | the enclosing benchmark group title |
 | `RecommendedSids` | parsed from the CIS recommendation title, cross-checked against `Policies.json` |
-| `SettingName` for auditpol | subcategory GUID, from `Policies.json` plus three added here |
+| `SettingName` for auditpol | subcategory GUID, read from the PDF's own `auditpol /get /subcategory:"{...}"` line; `Policies.json` and the three added here are only a fallback, and a disagreement is reported as a warning |
 
 The report's OVAL criteria are used to cross-check every registry value name.
 Where the two disagree the PDF wins — the report's OVAL content has known errors
@@ -61,6 +61,13 @@ from the recommendation title disagrees with the hand-written table in
 corrected (2.2.6 was missing Administrators; 2.2.16 and 2.2.17 listed
 Administrators where CIS says Guests). A *new* warning after a benchmark update
 means CIS changed the recommendation — read it, don't silence it.
+
+It warns the same way when an audit subcategory GUID in `Policies.json`
+disagrees with the GUID the benchmark itself quotes, and uses the benchmark's.
+That check exists because two of them were shifted by one: *Audit Detailed File
+Share* carried the *Network Policy Server* GUID and *Audit Removable Storage*
+carried *Detailed File Share*'s, so both checks silently read the wrong
+subcategory.
 
 ## Editing the VDI decisions
 
