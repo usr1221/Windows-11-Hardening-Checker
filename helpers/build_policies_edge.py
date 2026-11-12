@@ -17,7 +17,7 @@ carries it: the .PolicyRules file has only raw registry data, and the xlsx
 falls back to the value name when the converter cannot resolve a friendly
 name.
 
-Writes Policies-Edge.json in the repository root.
+Inputs are read from sources/; writes policies/Policies-Edge.json.
 """
 import json
 import os

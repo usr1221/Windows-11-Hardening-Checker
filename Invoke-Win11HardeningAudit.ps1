@@ -4,7 +4,9 @@
     Windows 11 workstations" guidance and produces an Excel (.xlsx) report.
 
 .DESCRIPTION
-    Audits every check defined in Policies.json and writes a colour-coded
+    Audits every check in the selected policy set (policies\Policies.json by
+    default; see -PoliciesPath for the CIS, VDI, Edge and Windows Server sets)
+    and writes a colour-coded
     Excel workbook with the columns: Policy Name, Scope, Source, Policy Path,
     Registry Path (or data source), Setting name, Current Value, Recommended
     Value, Status and Priority (plus Category and Notes for context).
@@ -40,8 +42,9 @@
     required.
 
 .PARAMETER PoliciesPath
-    Path to the policy definition JSON. Defaults to Policies.json next to this
-    script.
+    Policy definition JSON. Either a path, or just the file name of a set in
+    the policies\ folder next to this script (".json" may be omitted), e.g.
+    Policies-CIS-Server2022-DC. Defaults to policies\Policies.json (ASD/ACSC).
 
 .PARAMETER OutputPath
     Path of the .xlsx to create. Defaults to a timestamped file next to this
@@ -55,6 +58,10 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\Invoke-Win11HardeningAudit.ps1
+
+.EXAMPLE
+    .\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-DC
+    Audits a Windows Server 2022 domain controller against CIS Level 1.
 
 .NOTES
     Run in an elevated (Administrator) PowerShell for complete results - some
@@ -76,9 +83,32 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-if (-not $PoliciesPath) { $PoliciesPath = Join-Path $scriptDir 'Policies.json' }
+function Resolve-PoliciesPath {
+    # Policy sets live in .\policies\ next to this script. -PoliciesPath is used
+    # as given when it exists (absolute, or relative to the current directory);
+    # otherwise a bare file name - with or without .json - is looked up in
+    # .\policies\. With no -PoliciesPath the default is policies\Policies.json,
+    # falling back to Policies.json next to the script (the pre-policies\ layout).
+    param([string]$Path, [string]$ScriptDir)
+    $policiesDir = Join-Path $ScriptDir 'policies'
+    if (-not $Path) {
+        foreach ($c in @((Join-Path $policiesDir 'Policies.json'), (Join-Path $ScriptDir 'Policies.json'))) {
+            if (Test-Path $c) { return $c }
+        }
+        return (Join-Path $policiesDir 'Policies.json')
+    }
+    if (Test-Path $Path) { return $Path }
+    if ($Path -eq (Split-Path -Leaf $Path)) {
+        foreach ($c in @((Join-Path $policiesDir $Path), (Join-Path $policiesDir "$Path.json"))) {
+            if (Test-Path $c) { return $c }
+        }
+    }
+    return $Path
+}
+
+$PoliciesPath = Resolve-PoliciesPath -Path $PoliciesPath -ScriptDir $scriptDir
 if (-not (Test-Path $PoliciesPath)) {
-    throw "Policy definition file not found: $PoliciesPath"
+    throw "Policy definition file not found: $PoliciesPath (policy sets are in $(Join-Path $scriptDir 'policies'))"
 }
 
 if (-not $OutputPath) {
@@ -107,8 +137,12 @@ Write-Host ("  Loaded {0} policy checks." -f $policies.Count) -ForegroundColor G
 $policyFileName = [System.IO.Path]::GetFileNameWithoutExtension($PoliciesPath)
 $isCisSet = [bool](@($policies | Where-Object { $_.CisSection }).Count)
 $isVdiSet = [bool](@($policies | Where-Object { $_.VDIDecision }).Count)
+# Sets generated from a single benchmark name it on every record (e.g. the
+# Windows Server sets: "... Server 2022 Benchmark v5.1.0 - Level 1 - Domain Controller").
+$cisBenchmark = $policies | Where-Object { $_.CisBenchmark } | Select-Object -First 1 -ExpandProperty CisBenchmark
 $baselineName =
     if     ($isVdiSet) { 'CIS Microsoft Windows 11 Enterprise Benchmark, Level 1 - reviewed for non-persistent VDI' }
+    elseif ($cisBenchmark) { [string]$cisBenchmark }
     elseif ($isCisSet) { 'CIS Microsoft Windows 11 Enterprise Benchmark, Level 1' }
     elseif ($policyFileName -eq 'Policies') { 'ASD/ACSC Hardening Microsoft Windows 11 workstations' }
     elseif ($policyFileName -match 'Edge')  { 'Microsoft Edge security baseline' }

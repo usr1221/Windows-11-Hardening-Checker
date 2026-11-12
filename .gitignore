@@ -1,3 +1,13 @@
 claude/
 .cis-build/
 __pycache__/
+
+# Benchmark source documents. The CIS terms of use forbid redistributing the
+# benchmark PDFs, and CIS-CAT / Policy Analyzer reports describe real hosts.
+# A file that is already tracked stays tracked - see sources/README.md.
+sources/*
+!sources/README.md
+
+# Audit reports the engine writes next to itself (they contain host data)
+Win11_Hardening_Audit_*.xlsx
+Win11_Hardening_Audit_*.csv

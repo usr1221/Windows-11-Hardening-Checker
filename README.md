@@ -21,18 +21,39 @@ sources**, not just the registry:
 (`secedit /export` and `auditpol /backup` only *write a temp file* — they never
 modify configuration.)
 
-## Files
+## Repository layout
+
+```
+Invoke-Win11HardeningAudit.ps1   the audit engine + self-contained .xlsx writer - run this
+policies/                        the policy sets the engine reads (-PoliciesPath)
+tools/                           report converters (CIS-CAT HTML / Policy Analyzer -> .xlsx)
+helpers/                         generators that rebuild policies/ from sources/ - see helpers/README.md
+sources/                         benchmark PDFs and reports the generators read (git-ignored) - see sources/README.md
+```
+
+Only the engine and `policies/` are needed to run an audit; copy those two to
+the machine you are auditing.
+
+### Policy sets (`policies/`)
+
+| File | Use on | Baseline |
+|------|--------|----------|
+| `Policies.json` | Windows 11 | **Default.** ASD/ACSC "Hardening Microsoft Windows 11 workstations" |
+| `Policies-CIS.json` | Windows 11 | **CIS Microsoft Windows 11 Enterprise Benchmark v5.0.1, Level 1** — 409 checks covering all 393 Level 1 recommendations of the benchmark |
+| `Policies-VDI.json` | Windows 11 VDI | The CIS set reviewed for **non-persistent VDI** — 379 checks (30 dropped as not applicable, 4 re-valued, 19 tolerant of a removed service) |
+| `Policies-VDI-Decisions.csv` | — | The full audit trail: every CIS check with its VDI decision (Keep / Adjusted / Tolerant / Excluded), both values, both operators and the rationale |
+| `Policies-Edge.json` | any (with Edge) | **Microsoft Edge v139 security baseline** (Microsoft Security Compliance Toolkit) — 19 checks, browser only |
+| `Policies-CIS-Server2022-MS.json` | Server 2022 member server | **CIS Microsoft Windows Server 2022 Benchmark v5.1.0, Level 1 - Member Server** — 303 checks |
+| `Policies-CIS-Server2022-DC.json` | Server 2022 domain controller | **CIS Microsoft Windows Server 2022 Benchmark v5.1.0, Level 1 - Domain Controller** — 301 checks |
+| `Policies-CIS-Server2019-MS.json` | Server 2019 member server | **CIS Microsoft Windows Server 2019 Benchmark v5.0.0, Level 1 - Member Server** — 300 checks |
+| `Policies-CIS-Server2019-DC.json` | Server 2019 domain controller | **CIS Microsoft Windows Server 2019 Benchmark v5.0.0, Level 1 - Domain Controller** — 297 checks |
+
+### Tools (`tools/`)
 
 | File | Purpose |
 |------|---------|
-| `Invoke-Win11HardeningAudit.ps1` | The audit engine + self-contained `.xlsx` writer |
-| `Policies.json` | Default policy set — ASD/ACSC "Hardening Microsoft Windows 11 workstations" |
-| `Policies-CIS.json` | **CIS Microsoft Windows 11 Enterprise Benchmark v5.0.1, Level 1** — 409 checks covering all 393 Level 1 recommendations of the benchmark |
-| `Policies-VDI.json` | The CIS set reviewed for **non-persistent VDI** — 379 checks (30 dropped as not applicable, 4 re-valued, 19 tolerant of a removed service) |
-| `Policies-VDI-Decisions.csv` | The full audit trail: every CIS check with its VDI decision (Keep / Adjusted / Tolerant / Excluded), both values, both operators and the rationale |
-| `Policies-Edge.json` | **Microsoft Edge v139 security baseline** (Microsoft Security Compliance Toolkit) — 19 checks, browser only |
-| `helpers/` | Generators that rebuild the CIS, VDI and Edge sets from their source documents — see `helpers/README.md` |
-| `README.md` | This file |
+| `Convert-CisCatHtmlToXlsx.ps1` | Converts a CIS-CAT HTML report to `.xlsx` |
+| `Convert-PolicyAnalyzerToXlsx.ps1` | Converts a Policy Analyzer comparison to `.xlsx` (used for the Edge baseline input) |
 
 ### The CIS and VDI policy sets
 
@@ -99,21 +120,64 @@ The baseline's `**delvals.` entry is deliberately **not** a check: it is a
 before writing, and it never exists in the registry, so auditing it would
 report Not Configured on a fully compliant machine forever.
 
-Run the sets with `-PoliciesPath`:
+### The Windows Server sets
+
+The four `Policies-CIS-Server*.json` files are the **Level 1** profiles of the
+CIS Windows Server 2022 (v5.1.0) and 2019 (v5.0.0) benchmarks, one file per
+role. Pick the file that matches the server, not both:
+
+- **`-MS`** — *Level 1 - Member Server*: any domain-joined server that is not a
+  domain controller. Includes the `(MS only)` items (LAPS, Guest account status,
+  administrator lockout, the MS user-right lists).
+- **`-DC`** — *Level 1 - Domain Controller*: includes the `(DC only)` items —
+  LDAP signing and channel binding, the vulnerable-Netlogon allow-list, Print
+  Spooler disabled, the DC user-right lists (*ENTERPRISE DOMAIN CONTROLLERS*,
+  *Synchronize directory service data*) and seven extra audit subcategories
+  (Kerberos, DS Access / DS Changes, account management).
+
+The report's *Baseline* line names the benchmark, version and profile the file
+was built from (`CisBenchmark` on every record).
+
+Things that behave differently from the Windows 11 set:
+
+- **No Defender Antivirus / ASR checks.** CIS removed them from the OS
+  benchmarks and publishes them as a separate *Microsoft Defender Antivirus*
+  benchmark, so section 18.10.42 is empty in both Server PDFs.
+- **Conditional principals are allowed, not required.** *Impersonate a client
+  after authentication* also accepts `IIS_IUSRS` (CIS allows it when the IIS
+  role is installed), and *Create symbolic links* accepts the Hyper-V
+  `Virtual Machines` group on member servers.
+- **Server 2019 has two variants of *Impersonate a client*** (2.2.32 without and
+  2.2.33 with `RESTRICTED SERVICES\PrintSpoolerService`). They are reported as
+  one check against the wider list — as two allow-list checks, every machine
+  whose restricted spooler holds the right would fail 2.2.32 forever.
+- **DC `NullSessionPipes`** passes for any subset of `LSARPC, NETLOGON, SAMR`
+  (plus `BROWSER`); any other anonymously reachable pipe is a Mismatch.
+
+On a domain controller, section 1 (password and lockout policy) reflects the
+domain's *Default Domain Policy*, and the renamed-account checks read the
+domain's built-in Administrator and Guest (RID 500/501) — DCs have no local
+account database.
+
+Run a set with `-PoliciesPath`. A bare file name is looked up in `policies\`
+(`.json` is optional), so this works from any directory:
 
 ```powershell
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-CIS.json
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-VDI.json
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\Policies-Edge.json
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-VDI
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-Edge
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-MS   # member server
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-DC   # domain controller
+.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\policies\Policies-CIS.json # an explicit path works too
 ```
 
 Both sets are generated, not hand-maintained. To rebuild them after a benchmark
-update, drop the new CIS-CAT report and benchmark PDF in the repository root and
+update, drop the new CIS-CAT report and benchmark PDF in `sources/` and
 run the pipeline in `helpers/` — see `helpers/README.md`.
 
 ## Requirements
 
-- Windows 11
+- Windows 11 (or Windows Server 2019 / 2022 for the `Policies-CIS-Server*` sets)
 - Windows PowerShell 5.1 (built in) or PowerShell 7+
 - **No** extra modules and **no** installed copy of Excel are required — the
   `.xlsx` is generated directly via the Open XML format.
@@ -212,7 +276,8 @@ Office macro hardening, credential protection, SMB signing, UAC, firewall).
 
 ## Extending / tuning the checks
 
-All checks live in `Policies.json`. Each entry looks like:
+Every policy set is a JSON array in `policies/`; the default is
+`policies/Policies.json`. Each entry looks like:
 
 ```json
 {
@@ -343,7 +408,7 @@ implementation of this guide. Remaining intentional exclusions:
   Guest/Administrator names may be translated (e.g. `Gość`), so the "renamed"
   checks can pass as a locale artifact — verify manually.
 - **Recommended values should be validated against the live guide.** Microsoft
-  and the ASD update guidance over time. Treat `Policies.json` as a baseline to
+  and the ASD update guidance over time. Treat `policies/Policies.json` as a baseline to
   review against the current published version, and adjust the few values that
   are environment-dependent (e.g. event-log sizes, telemetry level, audit
   Success/Failure levels, lockout duration, whether RDP is required at all).
