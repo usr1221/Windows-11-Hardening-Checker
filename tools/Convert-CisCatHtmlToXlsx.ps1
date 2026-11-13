@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Converts a CIS-CAT benchmark HTML report to an Excel (.xlsx) workbook that
-    matches the format produced by Invoke-Win11HardeningAudit.ps1.
+    matches the format produced by Invoke-WindowsHardeningAudit.ps1.
 
 .DESCRIPTION
     Reads a CIS-CAT Pro Assessor HTML report (v4 or Legacy Bundle), extracts the
@@ -704,7 +704,7 @@ $ncMedium = ($rows | Where-Object { $_.Status -in @('Mismatch','Not Configured')
 $ncLow    = ($rows | Where-Object { $_.Status -in @('Mismatch','Not Configured') -and $_.Priority -eq 'Low'    }).Count
 
 # --------------------------------------------------------------------------
-#  XLSX writer (mirrors Invoke-Win11HardeningAudit.ps1)
+#  XLSX writer (mirrors Invoke-WindowsHardeningAudit.ps1)
 # --------------------------------------------------------------------------
 function ConvertTo-XmlText {
     param([string]$Text)

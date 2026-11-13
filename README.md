@@ -1,9 +1,13 @@
-# Windows 11 Hardening Audit Tool (ASD / ACSC)
+# Windows Hardening Audit Tool
 
-A read-only PowerShell tool that audits a **Windows 11 workstation** against the
-Australian Signals Directorate (ASD / ACSC) guide
-[*Hardening Microsoft Windows 11 workstations*](https://www.cyber.gov.au/business-government/protecting-devices-systems/hardening-systems-applications/system-hardening/hardening-microsoft-windows-11-workstations)
-and produces a colour-coded **Excel (.xlsx)** report.
+A read-only PowerShell tool that audits a **Windows 11 workstation** or a
+**Windows Server 2019 / 2022** member server or domain controller against a
+hardening baseline and produces a colour-coded **Excel (.xlsx)** report.
+
+The default baseline is the Australian Signals Directorate (ASD / ACSC) guide
+[*Hardening Microsoft Windows 11 workstations*](https://www.cyber.gov.au/business-government/protecting-devices-systems/hardening-systems-applications/system-hardening/hardening-microsoft-windows-11-workstations).
+CIS Level 1 sets for Windows 11 and Windows Server, and the Microsoft Edge
+security baseline, are included as well — see [Policy sets](#policy-sets-policies).
 
 The tool is **read-only** — it never changes any setting. It audits **seven data
 sources**, not just the registry:
@@ -24,7 +28,7 @@ modify configuration.)
 ## Repository layout
 
 ```
-Invoke-Win11HardeningAudit.ps1   the audit engine + self-contained .xlsx writer - run this
+Invoke-WindowsHardeningAudit.ps1   the audit engine + self-contained .xlsx writer - run this
 policies/                        the policy sets the engine reads (-PoliciesPath)
 tools/                           report converters (CIS-CAT HTML / Policy Analyzer -> .xlsx)
 helpers/                         generators that rebuild policies/ from sources/ - see helpers/README.md
@@ -163,12 +167,12 @@ Run a set with `-PoliciesPath`. A bare file name is looked up in `policies\`
 (`.json` is optional), so this works from any directory:
 
 ```powershell
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-VDI
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-Edge
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-MS   # member server
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-DC   # domain controller
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\policies\Policies-CIS.json # an explicit path works too
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath Policies-CIS
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath Policies-VDI
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath Policies-Edge
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-MS   # member server
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-DC   # domain controller
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath .\policies\Policies-CIS.json # an explicit path works too
 ```
 
 Both sets are generated, not hand-maintained. To rebuild them after a benchmark
@@ -189,22 +193,22 @@ run the pipeline in `helpers/` — see `helpers/README.md`.
 ## Usage
 
 ```powershell
-# From the audit_tool folder, in an elevated PowerShell:
-powershell -ExecutionPolicy Bypass -File .\Invoke-Win11HardeningAudit.ps1
+# From the repository folder, in an elevated PowerShell:
+powershell -ExecutionPolicy Bypass -File .\Invoke-WindowsHardeningAudit.ps1
 ```
 
 Options:
 
 ```powershell
 # Choose the output path, also emit a CSV, and open the report when done
-.\Invoke-Win11HardeningAudit.ps1 -OutputPath C:\Reports\audit.xlsx -IncludeCsv -OpenWhenDone
+.\Invoke-WindowsHardeningAudit.ps1 -OutputPath C:\Reports\audit.xlsx -IncludeCsv -OpenWhenDone
 
 # Use a custom policy file
-.\Invoke-Win11HardeningAudit.ps1 -PoliciesPath .\MyPolicies.json
+.\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath .\MyPolicies.json
 ```
 
 By default the report is written next to the script as
-`Win11_Hardening_Audit_<HOSTNAME>_<TIMESTAMP>.xlsx`.
+`Windows_Hardening_Audit_<HOSTNAME>_<TIMESTAMP>.xlsx`.
 
 ## The report
 

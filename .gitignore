@@ -8,6 +8,7 @@ __pycache__/
 sources/*
 !sources/README.md
 
-# Audit reports the engine writes next to itself (they contain host data)
-Win11_Hardening_Audit_*.xlsx
-Win11_Hardening_Audit_*.csv
+# Audit reports the engine writes next to itself (they contain host data).
+# Covers the current Windows_Hardening_Audit_* name and the older Win11_ one.
+*_Hardening_Audit_*.xlsx
+*_Hardening_Audit_*.csv

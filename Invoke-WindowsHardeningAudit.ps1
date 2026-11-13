@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Audits a Windows 11 workstation against the ASD/ACSC "Hardening Microsoft
-    Windows 11 workstations" guidance and produces an Excel (.xlsx) report.
+    Audits a Windows 11 workstation or a Windows Server 2019/2022 member server
+    or domain controller against a hardening baseline (ASD/ACSC, CIS, Microsoft
+    Edge) and produces an Excel (.xlsx) report.
 
 .DESCRIPTION
     Audits every check in the selected policy set (policies\Policies.json by
@@ -57,10 +58,10 @@
     Open the report when finished.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\Invoke-Win11HardeningAudit.ps1
+    powershell -ExecutionPolicy Bypass -File .\Invoke-WindowsHardeningAudit.ps1
 
 .EXAMPLE
-    .\Invoke-Win11HardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-DC
+    .\Invoke-WindowsHardeningAudit.ps1 -PoliciesPath Policies-CIS-Server2022-DC
     Audits a Windows Server 2022 domain controller against CIS Level 1.
 
 .NOTES
@@ -113,14 +114,14 @@ if (-not (Test-Path $PoliciesPath)) {
 
 if (-not $OutputPath) {
     $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $OutputPath = Join-Path $scriptDir ("Win11_Hardening_Audit_{0}_{1}.xlsx" -f $env:COMPUTERNAME, $stamp)
+    $OutputPath = Join-Path $scriptDir ("Windows_Hardening_Audit_{0}_{1}.xlsx" -f $env:COMPUTERNAME, $stamp)
 }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-Write-Host "Windows 11 Hardening Audit" -ForegroundColor Cyan
+Write-Host "Windows Hardening Audit" -ForegroundColor Cyan
 Write-Host ("  Host        : {0}" -f $env:COMPUTERNAME)
 Write-Host ("  User        : {0}\{1}" -f $env:USERDOMAIN, $env:USERNAME)
 Write-Host ("  Elevated    : {0}" -f $isAdmin)
@@ -1143,7 +1144,7 @@ $auditSheet = Build-SheetXml -Rows $dataRows.ToArray() -Cols $cols -Freeze $true
 
 # ---- Build the "Summary" sheet ----
 $sumRows = New-Object System.Collections.ArrayList
-[void]$sumRows.Add(@( @{ V='Windows 11 Hardening Audit - Summary'; S=6 } ))
+[void]$sumRows.Add(@( @{ V='Windows Hardening Audit - Summary'; S=6 } ))
 [void]$sumRows.Add(@( @{ V='Baseline';        S=6 }, @{ V=$baselineName; S=0 } ))
 [void]$sumRows.Add(@( @{ V='Policy set';      S=6 }, @{ V=(Split-Path -Leaf $PoliciesPath); S=0 } ))
 [void]$sumRows.Add(@( @{ V='Generated';       S=6 }, @{ V=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); S=0 } ))

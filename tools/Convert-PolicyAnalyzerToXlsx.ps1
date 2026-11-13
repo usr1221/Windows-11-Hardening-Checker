@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Converts a Microsoft Policy Analyzer XLSX report into an Excel workbook
-    that matches the format produced by Invoke-Win11HardeningAudit.ps1
+    that matches the format produced by Invoke-WindowsHardeningAudit.ps1
     and Convert-CisCatHtmlToXlsx.ps1.
 
 .DESCRIPTION
